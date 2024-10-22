@@ -16,7 +16,6 @@ Welcome to the **Auto-Editor GUI** project! 🎉 This is a modified version of t
 - **Real-time Feedback**: Implemented real-time logging to display command execution results and errors in the UI. 📜
 - **Enhanced User Experience**: Improved the layout and design using Tailwind CSS and Shadcn for a modern look and feel. ✨
 - **Dark Mode Default**: Set dark mode as the default theme for better visibility in various lighting conditions. 🌙
-- 
 
 
 ## 🌟 Features
