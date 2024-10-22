@@ -11,6 +11,8 @@ __pycache__/
 *.pyo
 *.spec
 
+node_modules
+
 # Build Files
 build/
 dist/
