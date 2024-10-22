@@ -3,7 +3,7 @@
 Welcome to the **Auto-Editor GUI** project! 🎉 This is a modified version of the original Auto-Editor, designed to provide a user-friendly graphical interface for editing videos using the Auto-Editor CLI tool. 🚀
 
 
-## 🎥 Screenshots
+## 📸 Screenshots
 
 ### 🗒️ Initial Screenshot (10/22)
 ![Initial Screenshot](https://i.imgur.com/I6CT4By.png)
