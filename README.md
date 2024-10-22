@@ -80,13 +80,13 @@ Ensure you have the following installed:
 5. (Optional) Compile TypeScript files for the main Electron process:
 
    ```bash
+   cd..
    npx tsc
    ```
 
 6. To run the Electron app, navigate back to the root directory and use:
 
    ```bash
-   cd..
    npm run electron
    ```
 
