@@ -2,6 +2,13 @@
 
 Welcome to the **Auto-Editor GUI** project! 🎉 This is a modified version of the original Auto-Editor, designed to provide a user-friendly graphical interface for editing videos using the Auto-Editor CLI tool. 🚀
 
+
+## 🎥 Screenshots
+
+### 🗒️ Initial Screenshot (10/22)
+![Initial Screenshot](https://i.imgur.com/I6CT4By.png)
+
+
 ## 🛠️ Changes Made
 
 - **GUI Implementation**: Integrated a React-based graphical user interface to simplify video editing tasks. 🎨
@@ -9,11 +16,8 @@ Welcome to the **Auto-Editor GUI** project! 🎉 This is a modified version of t
 - **Real-time Feedback**: Implemented real-time logging to display command execution results and errors in the UI. 📜
 - **Enhanced User Experience**: Improved the layout and design using Tailwind CSS and Shadcn for a modern look and feel. ✨
 - **Dark Mode Default**: Set dark mode as the default theme for better visibility in various lighting conditions. 🌙
+- 
 
-## 🎥 Screenshots
-
-### 🗒️ Initial Screenshot (10/22)
-![Initial Screenshot](https://i.imgur.com/I6CT4By.png)
 
 ## 🌟 Features
 
