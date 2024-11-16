@@ -14,5 +14,6 @@ export default defineConfig({
         rollupOptions: {
             input: path.resolve(__dirname, 'src/index.tsx'), // Adjust path as necessary
         },
+        outDir: path.resolve(__dirname, 'dist/renderer'), // Output folder for your renderer
     },
 });

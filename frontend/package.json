@@ -8,7 +8,8 @@
     "electron": "electron .",
     "dev": "vite",
     "build": "vite build",
-    "serve": "vite preview"
+    "serve": "vite preview",
+    "postbuild": "cp src/preload.ts dist/renderer/preload.js"
   },
   "keywords": [],
   "author": "",

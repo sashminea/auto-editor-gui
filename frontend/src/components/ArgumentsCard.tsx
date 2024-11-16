@@ -1,56 +1,49 @@
-import * as React from "react"
+import React from "react";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import ArgumentInput from "./InputLoudness";
 
-import { Button } from "@/components/ui/button"
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
-import ArgumentInput from "./InputLoudness"
+interface CardWithArgumentsProps {
+  onExport: (loudness: number, margin: number) => void;
+}
 
-function CardWithArguments() {
+const CardWithArguments: React.FC<CardWithArgumentsProps> = ({ onExport }) => {
+  const [loudness, setLoudness] = React.useState<number>(-19);
+  const [margin, setMargin] = React.useState<number>(0);
+
+  const handleLoudnessChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    setLoudness(Number(event.target.value));
+  };
+
+  const handleMarginChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    setMargin(Number(event.target.value));
+  };
+
+  const handleExport = () => {
+    onExport(loudness, margin);
+  };
+
   return (
     <Card className="w-[350px]">
       <CardHeader>
         <CardTitle>Adjust arguments</CardTitle>
-        <CardDescription>Specify variable values for automatic edit.</CardDescription>
       </CardHeader>
       <CardContent>
-        <form>
-          <div className="grid w-full items-center gap-4">
-            {/* <div className="flex flex-col space-y-1.5">
-              <Label htmlFor="name">Export as</Label>
-              <Input id="name" placeholder="Filename" />
-            </div> */}
-    
-            <div className="flex flex-col space-y-1.5">
-               <ArgumentInput label="Loudness" id="loudness" placeholder="-19dB" />
-            </div>
-            <div className="flex flex-col space-y-1.5">
-               <ArgumentInput label="Margin" id="margin" placeholder="None" />
-            </div>
-         
+        <div className="grid w-full items-center gap-4">
+          <div className="flex flex-col space-y-1.5">
+            <ArgumentInput label="Loudness" id="loudness" placeholder="-19dB" value={loudness} onChange={handleLoudnessChange} />
           </div>
-        </form>
+
+          <div className="flex flex-col space-y-1.5">
+            <ArgumentInput label="Margin" id="margin" placeholder="None" value={margin} onChange={handleMarginChange} />
+          </div>
+        </div>
       </CardContent>
-      <CardFooter className="flex flex-row-reverse justify-between">
-        {/* <Button variant="outline">Cancel</Button> */}
-        <Button>Export</Button>
+      <CardFooter className="flex justify-between">
+        <Button onClick={handleExport}>Apply</Button>
       </CardFooter>
     </Card>
-  )
-}
+  );
+};
 
 export default CardWithArguments;
