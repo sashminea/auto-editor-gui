@@ -96,9 +96,7 @@ Ensure you have the following installed:
 
 ### 📽️ Using the Application
 
-1. Select a video file using the "Select a video file" button. 🖼️
-2. Click the "Start Editing" button to process the selected video using the Auto-Editor CLI. 🛠️
-3. View the logs for feedback and results in the application window. 📈
+The application is currently under development and, for now, can only be used to generate commands.
 
 ### 📝 Folder Creation Logic
 
