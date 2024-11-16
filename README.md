@@ -2,12 +2,10 @@
 
 Welcome to the **Auto-Editor GUI** project! 🎉 This is a modified version of the original Auto-Editor, designed to provide a user-friendly graphical interface for editing videos using the Auto-Editor CLI tool. 🚀
 
-
 ## 📸 Screenshots
 
 ### 🗒️ Initial Screenshot (10/22)
 ![Initial Screenshot](https://i.imgur.com/I6CT4By.png)
-
 
 ## 🛠️ Changes Made
 
@@ -16,7 +14,8 @@ Welcome to the **Auto-Editor GUI** project! 🎉 This is a modified version of t
 - **Real-time Feedback**: Implemented real-time logging to display command execution results and errors in the UI. 📜
 - **Enhanced User Experience**: Improved the layout and design using Tailwind CSS and Shadcn for a modern look and feel. ✨
 - **Dark Mode Default**: Set dark mode as the default theme for better visibility in various lighting conditions. 🌙
-
+- **Folder Creation**: Added logic to ensure that the `Auto Editor Output` folder is created in the `AppData` directory if it doesn't already exist, enabling seamless file export. 📂
+- **Admin Permissions**: Added instructions for running the application with admin privileges to ensure folder creation and access to system directories. 🛡️
 
 ## 🌟 Features
 
@@ -25,6 +24,8 @@ Welcome to the **Auto-Editor GUI** project! 🎉 This is a modified version of t
 - Clear logging of actions and results. 📊
 - Modern UI components with Tailwind CSS. 🛠️
 - Built-in dark mode for comfortable viewing. 🌒
+- Automatic creation of `Auto Editor Output` folder (if it doesn't already exist). 📁
+- Instructions for running the app with admin privileges to handle folder creation issues. 🔑
 
 ## 📁 Project Structure
 
@@ -35,6 +36,7 @@ auto-editor-gui/
 │   ├── public/             # Public assets
 │   ├── package.json        # Dependencies for the frontend
 │   └── ...
+├── create-folder.js        # Script to create the output folder if it doesn't exist
 ├── main.ts                 # Main Electron process file
 ├── tsconfig.json           # TypeScript configuration
 └── package.json            # Dependencies for the entire project
@@ -50,7 +52,6 @@ Ensure you have the following installed:
 - [Electron](https://www.electronjs.org/) (for building the app; we'll integrate this later as a dependency)
 - [Auto-Editor CLI](https://github.com/WZBSocialScienceCenter/auto-editor) (installed via `pip`)
 - [Python](https://www.python.org/) (required for the Auto-Editor CLI)
-
 
 ### 📝 Installation
 
@@ -73,33 +74,32 @@ Ensure you have the following installed:
    npm install
    ```
 
-4. Navigate to the `frontend` folder and install dependencies:
+4. Navigate to the `frontend` folder and install dependencies and start localhost:
 
    ```bash
    cd frontend
    npm install
+   npm run dev
    ```
 
-5. Navigate back to the root directory, compile TypeScript files for the main Electron process:
+5. Navigate back to the root directory and run the electron app
 
    ```bash
-   cd..
-   npx tsc
+   cd ..
+   npm start
    ```
 
-6. To run the Electron app:
-
-   ```bash
-   npm run electron
-   ```
-
-
+   This will create the `Auto Editor Output` folder if it doesn't exist and launch the app. If you encounter permissions issues, ensure that you're running the app with **admin privileges**.
 
 ### 📽️ Using the Application
 
 1. Select a video file using the "Select a video file" button. 🖼️
 2. Click the "Start Editing" button to process the selected video using the Auto-Editor CLI. 🛠️
 3. View the logs for feedback and results in the application window. 📈
+
+### 📝 Folder Creation Logic
+
+If the `Auto Editor Output` folder in `AppData` does not exist, it will be created automatically upon running the app. This ensures smooth operation and avoids errors during file export. If you are experiencing issues with folder creation, please try running the app with **admin permissions**.
 
 ## 🤝 Contribution
 
