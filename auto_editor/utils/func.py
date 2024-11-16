@@ -81,21 +81,10 @@ def mut_margin(arr: BoolList, start_m: int, end_m: int) -> None:
             arr[max(i + end_m, 0) : i] = False
 
 
-def merge(start_list: np.ndarray, end_list: np.ndarray) -> BoolList:
-    result = np.zeros((len(start_list)), dtype=np.bool_)
-
-    for i, item in enumerate(start_list):
-        if item == True:
-            where = np.where(end_list[i:])[0]
-            if len(where) > 0:
-                result[i : where[0]] = True
-    return result
-
-
 def get_stdout(cmd: list[str]) -> str:
     from subprocess import DEVNULL, PIPE, Popen
 
-    stdout, _ = Popen(cmd, stdin=DEVNULL, stdout=PIPE, stderr=PIPE).communicate()
+    stdout = Popen(cmd, stdin=DEVNULL, stdout=PIPE, stderr=PIPE).communicate()[0]
     return stdout.decode("utf-8", "replace")
 
 
@@ -116,25 +105,3 @@ def aspect_ratio(width: int, height: int) -> tuple[int, int]:
 
     c = gcd(width, height)
     return width // c, height // c
-
-
-def human_readable_time(time_in_secs: float) -> str:
-    units = "seconds"
-    if time_in_secs >= 3600:
-        time_in_secs = round(time_in_secs / 3600, 1)
-        if time_in_secs % 1 == 0:
-            time_in_secs = round(time_in_secs)
-        units = "hours"
-    if time_in_secs >= 60:
-        time_in_secs = round(time_in_secs / 60, 1)
-        if time_in_secs >= 10 or time_in_secs % 1 == 0:
-            time_in_secs = round(time_in_secs)
-        units = "minutes"
-    return f"{time_in_secs} {units}"
-
-
-def append_filename(path: str, val: str) -> str:
-    from os.path import splitext
-
-    root, ext = splitext(path)
-    return root + val + ext
