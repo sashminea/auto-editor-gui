@@ -21,3 +21,6 @@ dist/
 # OS Files
 .DS_Store
 
+# Import/output Folder (Local imports/exports, not for version control)
+import/
+output/

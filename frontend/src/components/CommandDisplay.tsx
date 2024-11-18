@@ -7,6 +7,7 @@ interface CommandDisplayProps {
   exportAs: string;
   loudness: number;
   margin: number;
+  command: string; // Added prop to pass in the generated command
 }
 
 const CommandDisplay: React.FC<CommandDisplayProps> = ({
@@ -14,7 +15,8 @@ const CommandDisplay: React.FC<CommandDisplayProps> = ({
   exportPath,
   exportAs,
   loudness,
-  margin
+  margin,
+  command  // Use the passed command prop
 }) => {
   const [appDataPath, setAppDataPath] = useState<string>('');
 
@@ -32,12 +34,7 @@ const CommandDisplay: React.FC<CommandDisplayProps> = ({
   }, []);
 
   const outputFile = exportPath || `${appDataPath}\\AutoEditorOutput`; 
-
   const inputFilePath = selectedFile?.path || 'example.mp4';
-
-  const command = exportAs === 'mp4'
-    ? `auto-editor "${inputFilePath}" --edit audio:${loudness}dB --margin ${margin}sec --output "${outputFile}"`
-    : `auto-editor "${inputFilePath}" --export ${exportAs} --edit audio:${loudness}dB --margin ${margin}sec --output "${outputFile}"`;
 
   return (
     <Card className="border p-4 rounded-md gap-2 flex flex-col">
@@ -45,7 +42,8 @@ const CommandDisplay: React.FC<CommandDisplayProps> = ({
         <CardTitle>Generated Command</CardTitle>
       </CardHeader>
       <CardContent>
-        <p className="text-sm font-mono">{command}</p>
+        {/* Directly display the passed command */}
+        <p>{command}</p>
       </CardContent>
     </Card>
   );

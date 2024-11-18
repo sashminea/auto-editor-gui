@@ -5,9 +5,10 @@ import ArgumentInput from "./InputLoudness";
 
 interface CardWithArgumentsProps {
   onExport: (loudness: number, margin: number) => void;
+  onApply: (loudness: number, margin: number) => void;
 }
 
-const CardWithArguments: React.FC<CardWithArgumentsProps> = ({ onExport }) => {
+const CardWithArguments: React.FC<CardWithArgumentsProps> = ({ onExport, onApply }) => {
   const [loudness, setLoudness] = React.useState<number>(-19);
   const [margin, setMargin] = React.useState<number>(0);
 
@@ -21,6 +22,10 @@ const CardWithArguments: React.FC<CardWithArgumentsProps> = ({ onExport }) => {
 
   const handleExport = () => {
     onExport(loudness, margin);
+  };
+
+  const handleApply = () => {
+    onApply(loudness, margin);
   };
 
   return (
@@ -40,7 +45,8 @@ const CardWithArguments: React.FC<CardWithArgumentsProps> = ({ onExport }) => {
         </div>
       </CardContent>
       <CardFooter className="flex justify-between">
-        <Button onClick={handleExport}>Apply</Button>
+        <Button onClick={handleApply}>Apply</Button>
+        <Button onClick={handleExport}>Export</Button>
       </CardFooter>
     </Card>
   );

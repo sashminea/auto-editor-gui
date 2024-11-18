@@ -1,4 +1,5 @@
-import React from "react";
+import  React from "react";
+import  {useState} from "react";
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -8,9 +9,10 @@ interface CardWithFormProps {
   onFileSelect: (file: { name: string; path: string }) => void;
   onExportPathChange: (path: string) => void;
   onExportAsChange: (exportAs: string) => void;
+  selectedFile: { name: string; path: string } | null;  // Added prop for selected file
 }
 
-const CardWithForm: React.FC<CardWithFormProps> = ({ onFileSelect, onExportPathChange, onExportAsChange }) => {
+const CardWithForm: React.FC<CardWithFormProps> = ({ onFileSelect, onExportPathChange, onExportAsChange, selectedFile  }) => {
   const handleFileChange = async () => {
     try {
       // Call Electron's file dialog API to open the file selection dialog
@@ -41,9 +43,10 @@ const CardWithForm: React.FC<CardWithFormProps> = ({ onFileSelect, onExportPathC
   const handleExportAsChange = (value: string) => {
     onExportAsChange(value);
   };
-  
 
-  return (
+  const [isDisabled, setIsDisabled] = useState(false);
+
+return (
     <Card className="w-[350px]">
       <CardHeader>
         <CardTitle>Choose a video file</CardTitle>
@@ -51,27 +54,28 @@ const CardWithForm: React.FC<CardWithFormProps> = ({ onFileSelect, onExportPathC
       <CardContent>
         <div className="grid w-full items-center gap-4">
           <div className="flex flex-col space-y-1.5">
-            {/* Replace InputFile with a button that triggers file selection */}
             <button onClick={handleFileChange} className="btn">Select File</button>
           </div>
           <div className="flex flex-col space-y-1.5">
-            <StringInput
+            <div style={{ pointerEvents: 'none'}}>
+            <StringInput 
               label="Export Path"
               id="exportPath"
-              placeholder="AppData\Roaming\Auto Editor Output"
-              onChange={handleExportPathChange}
+              placeholder="output/"
+              onChange={(e) => onExportPathChange(e.target.value)}
              
             />
+            </div>
           </div>
           <div className="flex flex-col space-y-1.5">
             <Label htmlFor="framework">Export as</Label>
-            <Select onValueChange={handleExportAsChange}>
+            <Select onValueChange={onExportAsChange}>
               <SelectTrigger id="framework">
                 <SelectValue placeholder="Premiere Pro XML" />
               </SelectTrigger>
               <SelectContent position="popper">
-                <SelectItem value="mp4">Default (MP4)</SelectItem>
                 <SelectItem value="premiere">Premiere Pro XML</SelectItem>
+                <SelectItem value=" ">MP4</SelectItem>
                 <SelectItem value="resolve-fcp7">Resolve FCP7 XML</SelectItem>
                 <SelectItem value="final-cut-pro">Final Cut Pro XML</SelectItem>
                 <SelectItem value="resolve">DaVinci Resolve XML</SelectItem>
@@ -89,5 +93,4 @@ const CardWithForm: React.FC<CardWithFormProps> = ({ onFileSelect, onExportPathC
     </Card>
   );
 };
-
 export default CardWithForm;

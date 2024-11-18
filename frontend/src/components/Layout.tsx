@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import NavigationMenuDemo from './NavBar';
-import CardWithForm from './InputCard';
-import CardWithArguments from './ArgumentsCard';
+import ExportXML from './ExportXML';
 import CommandDisplay from './CommandDisplay';
 
 interface SelectedFile {
@@ -11,13 +10,14 @@ interface SelectedFile {
 
 const Layout: React.FC = () => {
   const [selectedFile, setSelectedFile] = useState<SelectedFile | null>(null);
-  const [exportPath, setExportPath] = useState<string>('');
+  const [exportPath, setExportPath] = useState<string>('\\output');
   const [exportAs, setExportAs] = useState<string>('premiere');
   const [loudness, setLoudness] = useState<number>(-19);
   const [margin, setMargin] = useState<number>(0);
+  const [command, setCommand] = useState<string>('');
 
+  // Fetch AppData path when the component mounts
   useEffect(() => {
-    // Fetch the AppData path when the component mounts
     const fetchAppDataPath = async () => {
       try {
         const appDataPath = await window.electron.getAppDataPath();
@@ -30,53 +30,40 @@ const Layout: React.FC = () => {
     fetchAppDataPath();
   }, []);
 
-  const handleFileSelect = (file: { name: string; path: string } | null) => {
-    if (file) {
-      const filePath = file.path;
-      setSelectedFile({
-        name: file.name,
-        path: filePath, // Ensure the correct path is passed
-      });
-    } else {
-      setSelectedFile(null);
-    }
-  };
+   // Dynamically generate the command whenever the dependencies change
+  // useEffect(() => {
+  //   const generateCommand = () => {
+  //     const inputFilePath = selectedFile?.path || 'example.mp4';
+  //     const outputFile = exportPath || 'C:\\AutoEditorOutput';
+  //     const exportOption = exportAs || 'mp4';
+  //     const loudnessOption = `audio:${loudness}dB`;
+  //     const marginOption = `${margin}s`;
 
-  const handleExportPathChange = (path: string) => {
-    setExportPath(path);
-  };
+  //     // Construct the command string
+  //     const newCommand = `python -m auto_editor "${inputFilePath}" --export ${exportOption} --edit ${loudnessOption} --margin ${marginOption} --output "${outputFile}"`;
+      
+  //     setCommand(newCommand); // Update the command state
+  //   };
 
-  const handleExportAsChange = (exportAs: string) => {
-    setExportAs(exportAs);
-  };
+  //   generateCommand(); // Generate the command every time these values change
+  // }, [selectedFile, exportPath, exportAs, loudness, margin]); // Dependencies for when the command should regenerate
 
-  const handleExport = (loudness: number, margin: number) => {
-    setLoudness(loudness);
-    setMargin(margin);
-
-    if (selectedFile) {
-      const command = `auto-editor "${selectedFile.path}" --export ${exportAs} --edit audio:${loudness}dB --margin ${margin}sec --output "${exportPath}"`;
-      console.log("Running command:", command);
-    }
-  };
 
   return (
     <div className="flex flex-col container gap-4">
       <NavigationMenuDemo />
-      <main className="flex sm:flex-row flex-col gap-2">
-        <CardWithForm
-          onFileSelect={handleFileSelect} 
-          onExportPathChange={handleExportPathChange}
-          onExportAsChange={handleExportAsChange}
-        />
-        <CardWithArguments onExport={handleExport} />
-      </main>
+      <ExportXML
+        onFileSelect={setSelectedFile}
+        onCommandChange={setCommand}
+        onExportPathChange={setExportPath}
+      />
       <CommandDisplay
         selectedFile={selectedFile}
         exportPath={exportPath}
         exportAs={exportAs}
         loudness={loudness}
         margin={margin}
+        command={command}
       />
     </div>
   );
