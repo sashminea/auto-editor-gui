@@ -36,10 +36,19 @@ const CardWithForm: React.FC<CardWithFormProps> = ({ onFileSelect, onExportPathC
     }
   };
 
-  const handleExportPathChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    onExportPathChange(event.target.value);
+// Handler for selecting the export folder
+  const handleExportPathChange = async () => {
+    try {
+      const selectedFolderPath = await window.electron.openFolderDialog(); // Open folder dialog
+      if (selectedFolderPath) {
+        onExportPathChange(selectedFolderPath); // Update export path with selected folder
+      }
+    } catch (error) {
+      console.error('Folder selection failed:', error);
+    }
   };
 
+  // Handler for export format selection
   const handleExportAsChange = (value: string) => {
     onExportAsChange(value);
   };
@@ -57,7 +66,7 @@ return (
             <button onClick={handleFileChange} className="btn">Select File</button>
           </div>
           <div className="flex flex-col space-y-1.5">
-            <div style={{ pointerEvents: 'none'}}>
+                  <div style={{ pointerEvents: 'none'}}>
             <StringInput 
               label="Export Path"
               id="exportPath"
@@ -75,15 +84,10 @@ return (
               </SelectTrigger>
               <SelectContent position="popper">
                 <SelectItem value="premiere">Premiere Pro XML</SelectItem>
-                <SelectItem value=" ">MP4</SelectItem>
                 <SelectItem value="resolve-fcp7">Resolve FCP7 XML</SelectItem>
                 <SelectItem value="final-cut-pro">Final Cut Pro XML</SelectItem>
-                <SelectItem value="resolve">DaVinci Resolve XML</SelectItem>
                 <SelectItem value="shotcut">Shotcut MLT</SelectItem>
-                <SelectItem value="json">JSON Format</SelectItem>
-                <SelectItem value="timeline">Timeline Format</SelectItem>
                 <SelectItem value="audio">Audio Only</SelectItem>
-                <SelectItem value="clip-sequence">Clip Sequence</SelectItem>
               </SelectContent>
             </Select>
           </div>

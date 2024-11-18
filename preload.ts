@@ -28,6 +28,8 @@ contextBridge.exposeInMainWorld('electron', {
     }
   },
 
+  openFolderDialog: () => ipcRenderer.invoke("open-folder-dialog"),
+
   onCommandOutput: (callback: (output: string) => void) => {
     ipcRenderer.on('commandOutput', (event, output) => {
       callback(output);

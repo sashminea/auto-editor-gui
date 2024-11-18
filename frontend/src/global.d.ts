@@ -7,6 +7,7 @@ declare global {
       runCommand: (args: string[]) => Promise<string>;
       getFilePath: (fileName: string) => Promise<string>;
       openFileDialog: () => Promise<string | null>;
+      openFolderDialog: () => Promise<string | null>; 
       onCommandOutput: (callback: (output: string) => void) => void;
       getAppDataPath: () => Promise<string>;
     };
