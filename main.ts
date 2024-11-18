@@ -5,14 +5,10 @@ import fs from 'fs';
 import os from 'os';
 
 const createAutoEditorFolder = () => {
-  // Define the folder path (for example, AppData/Auto Editor Output)
   const folderPath = path.join(process.env.APPDATA || '', 'Auto Editor Output');
-
-  // Check if the directory exists
   if (!fs.existsSync(folderPath)) {
     try {
-      // Create the directory if it doesn't exist
-      fs.mkdirSync(folderPath, { recursive: true }); // recursive: true to create intermediate directories
+      fs.mkdirSync(folderPath, { recursive: true });
       console.log(`Directory created at: ${folderPath}`);
     } catch (error) {
       console.error('Error creating directory:', error);
@@ -212,7 +208,6 @@ ipcMain.handle('run-command', async (_event, args) => {
 
 
 
-// Handle file dialog for selecting and moving files
 ipcMain.handle('open-file-dialog', async () => {
   const result = await dialog.showOpenDialog({
     properties: ['openFile'],
@@ -222,28 +217,23 @@ ipcMain.handle('open-file-dialog', async () => {
   if (result.filePaths && result.filePaths.length > 0) {
     const selectedFilePath = result.filePaths[0];
 
-    // Define the 'import' folder path in your repo (root level)
     const importFolderPath = path.join(__dirname, '..', 'import');  // Root-level 'import' folder
     if (!fs.existsSync(importFolderPath)) {
-      // Create the 'import' folder if it doesn't exist
       fs.mkdirSync(importFolderPath, { recursive: true });
       console.log(`Import folder created at: ${importFolderPath}`);
     }
 
-    // Move the selected file to the 'import' folder
     const fileName = path.basename(selectedFilePath);
     const newFilePath = path.join(importFolderPath, fileName);
 
     fs.copyFileSync(selectedFilePath, newFilePath);  // This moves the file
-
     console.log(`File moved to: ${newFilePath}`);
     
-    return newFilePath;  // Return the new file path
+    return newFilePath;  // Return the new file path in the import folder
   } else {
     throw new Error('No file selected');
   }
 });
-
 
 app.whenReady().then(() => {
   createAutoEditorFolder();

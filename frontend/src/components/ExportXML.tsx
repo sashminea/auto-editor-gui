@@ -6,9 +6,16 @@ interface ExportXMLProps {
   onFileSelect: (file: { name: string; path: string } | null) => void;
   onCommandChange: (command: string) => void;
   onExportPathChange: (path: string) => void;
+  setAlert: React.Dispatch<React.SetStateAction<{ message: string, type: 'normal' | 'error' | 'success' | null } | null>>; // Prop to set alert
 }
 
-const ExportXML: React.FC<ExportXMLProps> = ({ onFileSelect, onCommandChange, onExportPathChange }) => {
+interface CommandResult {
+  success: boolean;
+  message?: string;
+}
+
+
+const ExportXML: React.FC<ExportXMLProps> = ({ onFileSelect, onCommandChange, onExportPathChange, setAlert  }) => {
   const [selectedFile, setSelectedFile] = useState<{ name: string; path: string } | null>(null);
   const [exportAs, setExportAs] = useState<string>('premiere');
   const [exportPath, setExportPath] = useState<string>('');
@@ -46,12 +53,13 @@ const buildCommand = (): string => {
   };
 
   // Handle export (loudness and margin changes)
-  const handleExport = (loud: number, marg: number) => {
+  const handleExport = async (loud: number, marg: number) => {
     setLoudness(loud);
     setMargin(marg);
     const command = buildCommand();
     onCommandChange(command);
-    runAutoEditor(command);
+    setAlert({ message: 'Exporting video...', type: 'normal' }); // Show "Exporting" alert
+    await runAutoEditor(command);
   };
 
   const handleApply = (loud: number, marg: number) => {
@@ -69,21 +77,46 @@ const buildCommand = (): string => {
 
 
 
-  const runAutoEditor = async (command: string) => {
-    if (!selectedFile) {
-      console.error("No file selected for processing.");
-      return;
-    }
-    try {
-      console.log('Running command:', command);
-      const commandArgs = command.split(' '); // Split the command string into arguments
-      const result = await window.electron.runCommand(commandArgs);
+const runAutoEditor = async (command: string) => {
+  if (!selectedFile) {
+    setAlert({ message: 'No file selected for processing.', type: 'error' });
+    return;
+  }
 
-      console.log('Command executed with result:', result);
-    } catch (error) {
-      console.error('Error executing command:', error);
+  try {
+    console.log('Running command:', command);
+    const commandArgs = command.split(' '); // Split the command string into arguments
+    const result = await window.electron.runCommand(commandArgs); // Run the command
+
+    console.log('Command executed with result:', result);
+
+    // Check if the result is a string (i.e., command output)
+    if (typeof result === 'string') {
+      // Check for the success message in the result
+      if (result.includes('Process completed successfully with code 0')) {
+        setAlert({ message: 'File processed successfully!', type: 'success' });
+      } else {
+        // If the result includes any error message, show error alert
+        setAlert({ message: result, type: 'error' });
+      }
+    } else {
+      // Handle unexpected result format
+      setAlert({ message: 'Unexpected result format.', type: 'error' });
     }
-  };
+
+  } catch (error: unknown) {
+    console.error('Error executing command:', error);
+
+    // Handle different error types
+    if (error instanceof Error) {
+      setAlert({ message: `Error: ${error.message}`, type: 'error' });
+    } else {
+      setAlert({ message: 'An unknown error occurred.', type: 'error' });
+    }
+  }
+};
+
+
 
   return (
     <div>
