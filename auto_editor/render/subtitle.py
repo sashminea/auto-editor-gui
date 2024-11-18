@@ -157,7 +157,7 @@ def make_srt(input_: Input, stream: int) -> str:
     return output_bytes.getvalue()
 
 
-def _ensure(input_: Input, format: str, stream: int, log: Log) -> str:
+def _ensure(input_: Input, format: str, stream: int) -> str:
     output_bytes = io.BytesIO()
     output = av.open(output_bytes, "w", format=format)
 
@@ -187,7 +187,9 @@ def make_new_subtitles(tl: v3, log: Log) -> list[str]:
             continue
 
         parser = SubtitleParser(tl.tb)
-        if sub.codec in ("webvtt", "ass", "ssa"):
+        if sub.codec == "ssa":
+            format = "ass"
+        elif sub.codec in ("webvtt", "ass"):
             format = sub.codec
         else:
             log.error(f"Unknown subtitle codec: {sub.codec}")
@@ -195,8 +197,8 @@ def make_new_subtitles(tl: v3, log: Log) -> list[str]:
         if sub.codec == "mov_text":
             ret = make_srt(input_, s)
         else:
-            ret = _ensure(input_, format, s, log)
-        parser.parse(ret, sub.codec)
+            ret = _ensure(input_, format, s)
+        parser.parse(ret, format)
         parser.edit(tl.v1.chunks)
 
         new_path = os.path.join(log.temp, f"new{s}s.{sub.ext}")

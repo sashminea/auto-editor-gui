@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sys
 from fractions import Fraction
+from os.path import splitext
 from subprocess import run
 from typing import Any
 
@@ -11,7 +12,7 @@ from av import AudioResampler
 
 from auto_editor.ffwrapper import FFmpeg, FileInfo, initFileInfo
 from auto_editor.lib.contracts import is_int, is_str
-from auto_editor.make_layers import make_timeline
+from auto_editor.make_layers import clipify, make_av, make_timeline
 from auto_editor.output import Ensure, parse_bitrate
 from auto_editor.render.audio import make_new_audio
 from auto_editor.render.subtitle import make_new_subtitles
@@ -31,7 +32,7 @@ def set_output(
     if src is None:
         root, ext = "out", ".mp4"
     else:
-        root, ext = os.path.splitext(str(src.path) if out is None else out)
+        root, ext = splitext(src.path if out is None else out)
         if ext == "":
             ext = src.path.suffix
 
@@ -164,7 +165,7 @@ def edit_media(paths: list[str], ffmpeg: FFmpeg, args: Args, log: Log) -> None:
     tl = None
 
     if paths:
-        path_ext = os.path.splitext(paths[0])[1].lower()
+        path_ext = splitext(paths[0])[1].lower()
         if path_ext == ".xml":
             from auto_editor.formats.fcp7 import fcp7_read_xml
 
@@ -243,7 +244,7 @@ def edit_media(paths: list[str], ffmpeg: FFmpeg, args: Args, log: Log) -> None:
         from auto_editor.formats.fcp7 import fcp7_write_xml
 
         is_resolve = export.startswith("resolve")
-        fcp7_write_xml(export_ops["name"], output, is_resolve, tl, log)
+        fcp7_write_xml(export_ops["name"], output, is_resolve, tl)
         return
 
     if export == "final-cut-pro":
@@ -267,7 +268,7 @@ def edit_media(paths: list[str], ffmpeg: FFmpeg, args: Args, log: Log) -> None:
         shotcut_write_mlt(output, tl)
         return
 
-    out_ext = os.path.splitext(output)[1].replace(".", "")
+    out_ext = splitext(output)[1].replace(".", "")
 
     # Check if export options make sense.
     ctr = container_constructor(out_ext.lower())
@@ -293,27 +294,7 @@ def edit_media(paths: list[str], ffmpeg: FFmpeg, args: Args, log: Log) -> None:
 
         if ctr.default_aud != "none":
             ensure = Ensure(bar, samplerate, log)
-            audio_paths = make_new_audio(tl, ensure, args, ffmpeg, bar, log)
-            if (
-                not (args.keep_tracks_separate and ctr.max_audios is None)
-                and len(audio_paths) > 1
-            ):
-                # Merge all the audio a_tracks into one.
-                new_a_file = os.path.join(log.temp, "new_audio.wav")
-                new_cmd = []
-                for path in audio_paths:
-                    new_cmd.extend(["-i", path])
-                new_cmd.extend(
-                    [
-                        "-filter_complex",
-                        f"amix=inputs={len(audio_paths)}:duration=longest",
-                        "-ac",
-                        "2",
-                        new_a_file,
-                    ]
-                )
-                ffmpeg.run(new_cmd)
-                audio_paths = [new_a_file]
+            audio_paths = make_new_audio(tl, ctr, ensure, args, ffmpeg, bar, log)
         else:
             audio_paths = []
 
@@ -430,13 +411,14 @@ def edit_media(paths: list[str], ffmpeg: FFmpeg, args: Args, log: Log) -> None:
         if tl.v1 is None:
             log.error("Timeline too complex to use clip-sequence export")
 
-        from auto_editor.make_layers import clipify, make_av
-        from auto_editor.utils.func import append_filename
-
         def pad_chunk(chunk: Chunk, total: int) -> Chunks:
             start = [] if chunk[0] == 0 else [(0, chunk[0], 99999.0)]
             end = [] if chunk[1] == total else [(chunk[1], total, 99999.0)]
             return start + [chunk] + end
+
+        def append_filename(path: str, val: str) -> str:
+            root, ext = splitext(path)
+            return root + val + ext
 
         total_frames = tl.v1.chunks[-1][1] - 1
         clip_num = 0
