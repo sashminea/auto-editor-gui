@@ -86,7 +86,7 @@ Ensure you have the following installed:
 
    ```bash
    cd ..
-   npm start
+   npm run start
    ```
 
 
