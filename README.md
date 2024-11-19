@@ -1,6 +1,6 @@
 # 🎥 Auto-Editor GUI
 
-Welcome to the **Auto-Editor GUI** project! This is a modified version of the original Auto-Editor, designed to provide a user-friendly graphical interface for editing videos using the Auto-Editor CLI tool. Auto-Editor automatically edits video and audio by analyzing a variety of methods, most notably audio loudness. Before doing the real editing, you first cut out the "dead space" which is typically silence. This is known as a "first pass". Cutting these is a boring task, especially if the video is very long. This is where, Auto-Editor steps in.
+This is a modified version of the original Auto-Editor, designed to provide a user-friendly graphical interface for editing videos using the Auto-Editor CLI tool. Auto-Editor automatically edits video and audio by analyzing a variety of methods, most notably audio loudness. Before doing the real editing, you first cut out the "dead space" which is typically silence. This is known as a "first pass". Cutting these is a boring task, especially if the video is very long. This is where, Auto-Editor steps in.
 
 <p align="center"><img src="https://auto-editor.com/img/auto-editor-banner.webp" title="Auto-Editor" width="700"></p>
 
