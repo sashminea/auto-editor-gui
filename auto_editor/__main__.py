@@ -8,7 +8,6 @@ from subprocess import run
 
 import auto_editor
 from auto_editor.edit import edit_media
-from auto_editor.ffwrapper import FFmpeg
 from auto_editor.utils.func import get_stdout
 from auto_editor.utils.log import Log
 from auto_editor.utils.types import (
@@ -34,13 +33,12 @@ def main_options(parser: ArgumentParser) -> ArgumentParser:
         "-m",
         type=margin,
         metavar="LENGTH",
-        help='Set sections near "loud" as "loud" too if section is less than LENGTH away.',
+        help='Set sections near "loud" as "loud" too if section is less than LENGTH away',
     )
     parser.add_argument(
-        "--edit-based-on",
         "--edit",
         metavar="METHOD",
-        help="Decide which method to use when making edits",
+        help="Set an expression which determines how to make auto edits",
     )
     parser.add_argument(
         "--silent-speed",
@@ -148,7 +146,7 @@ def main_options(parser: ArgumentParser) -> ArgumentParser:
         "--output",
         "-o",
         metavar="FILE",
-        help="Set the name/path of the new output file.",
+        help="Set the name/path of the new output file",
     )
     parser.add_argument(
         "--player", "-p", metavar="CMD", help="Set player to open output media files"
@@ -160,11 +158,6 @@ def main_options(parser: ArgumentParser) -> ArgumentParser:
         "--temp-dir",
         metavar="PATH",
         help="Set where the temporary directory is located",
-    )
-    parser.add_argument(
-        "--ffmpeg-location",
-        metavar="PATH",
-        help="Set a custom path to the ffmpeg location",
     )
     parser.add_text("Display Options:")
     parser.add_argument(
@@ -242,11 +235,6 @@ def main_options(parser: ArgumentParser) -> ArgumentParser:
         help="Disable the inclusion of data streams in the output file",
     )
     parser.add_argument(
-        "--extras",
-        metavar="CMD",
-        help="Add extra options for ffmpeg. Must be in quotes",
-    )
-    parser.add_argument(
         "--config", flag=True, help="When set, look for `config.pal` and run it"
     )
     parser.add_argument(
@@ -256,7 +244,7 @@ def main_options(parser: ArgumentParser) -> ArgumentParser:
     return parser
 
 
-def download_video(my_input: str, args: Args, ffmpeg: FFmpeg, log: Log) -> str:
+def download_video(my_input: str, args: Args, log: Log) -> str:
     log.conwrite("Downloading video...")
 
     def get_domain(url: str) -> str:
@@ -272,18 +260,15 @@ def download_video(my_input: str, args: Args, ffmpeg: FFmpeg, log: Log) -> str:
     else:
         output_format = args.output_format
 
-    yt_dlp_path = args.yt_dlp_location
-
-    cmd = ["--ffmpeg-location", ffmpeg.get_path("yt-dlp", log)]
-
+    cmd = []
     if download_format is not None:
         cmd.extend(["-f", download_format])
 
     cmd.extend(["-o", output_format, my_input])
-
     if args.yt_dlp_extras is not None:
         cmd.extend(args.yt_dlp_extras.split(" "))
 
+    yt_dlp_path = args.yt_dlp_location
     try:
         location = get_stdout(
             [yt_dlp_path, "--get-filename", "--no-warnings"] + cmd
@@ -326,6 +311,7 @@ def main() -> None:
             ({"--export-as-json"}, ["--export", "json"]),
             ({"--export-as-clip-sequence", "-excs"}, ["--export", "clip-sequence"]),
             ({"--keep-tracks-seperate"}, ["--keep-tracks-separate"]),
+            ({"--edit-based-on"}, ["--edit"]),
         ],
     )
 
@@ -352,11 +338,10 @@ def main() -> None:
     is_machine = args.progress == "machine"
     log = Log(args.debug, args.quiet, args.temp_dir, is_machine, no_color)
 
-    ffmpeg = FFmpeg(args.ffmpeg_location)
     paths = []
     for my_input in args.input:
         if my_input.startswith("http://") or my_input.startswith("https://"):
-            paths.append(download_video(my_input, args, ffmpeg, log))
+            paths.append(download_video(my_input, args, log))
         else:
             if not splitext(my_input)[1]:
                 if isdir(my_input):
@@ -370,7 +355,7 @@ def main() -> None:
             paths.append(my_input)
 
     try:
-        edit_media(paths, ffmpeg, args, log)
+        edit_media(paths, args, log)
     except KeyboardInterrupt:
         log.error("Keyboard Interrupt")
     log.cleanup()

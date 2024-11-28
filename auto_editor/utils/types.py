@@ -210,14 +210,13 @@ class Args:
     sample_rate: int | None = None
     resolution: tuple[int, int] | None = None
     background: str = "#000000"
-    edit_based_on: str = "audio"
+    edit: str = "audio"
     keep_tracks_separate: bool = False
     audio_normalize: str = "#f"
     export: str | None = None
     player: str | None = None
     no_open: bool = False
     temp_dir: str | None = None
-    ffmpeg_location: str | None = None
     progress: str = "modern"
     version: bool = False
     debug: bool = False
