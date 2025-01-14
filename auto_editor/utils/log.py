@@ -5,7 +5,10 @@ from datetime import timedelta
 from shutil import get_terminal_size, rmtree
 from tempfile import mkdtemp
 from time import perf_counter, sleep
-from typing import NoReturn
+from typing import TYPE_CHECKING, NoReturn
+
+if TYPE_CHECKING:
+    import av
 
 
 class Log:
@@ -96,6 +99,10 @@ class Log:
             minute_len = timedelta(seconds=round(second_len))
 
             sys.stdout.write(f"Finished. took {second_len} seconds ({minute_len})\n")
+
+    def experimental(self, codec: av.Codec) -> None:
+        if codec.experimental:
+            self.error(f"`{codec.name}` is an experimental codec")
 
     def error(self, message: str | Exception) -> NoReturn:
         if self.is_debug and isinstance(message, Exception):

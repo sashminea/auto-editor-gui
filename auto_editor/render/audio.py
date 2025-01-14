@@ -91,12 +91,12 @@ def apply_audio_normalization(
 ) -> None:
     if norm["tag"] == "ebu":
         first_pass = (
-            f"i={norm['i']}:lra={norm['lra']}:tp={norm['tp']}:" f"offset={norm['gain']}"
+            f"i={norm['i']}:lra={norm['lra']}:tp={norm['tp']}:offset={norm['gain']}"
         )
         log.debug(f"audio norm first pass: {first_pass}")
         with av.open(f"{pre_master}") as container:
             stats_ = stats(first_pass, container.streams.audio[0])
-        av.logging.set_level(None)
+
         name, filter_args = parse_ebu_bytes(norm, stats_, log)
     else:
         assert "t" in norm
@@ -167,10 +167,10 @@ def process_audio_clip(
     if clip.speed != 1:
         if clip.speed > 10_000:
             for _ in range(3):
-                args.append(graph.add("atempo", f"{clip.speed ** (1/3)}"))
+                args.append(graph.add("atempo", f"{clip.speed ** (1 / 3)}"))
         elif clip.speed > 100:
             for _ in range(2):
-                args.append(graph.add("atempo", f"{clip.speed ** 0.5}"))
+                args.append(graph.add("atempo", f"{clip.speed**0.5}"))
         elif clip.speed >= 0.5:
             args.append(graph.add("atempo", f"{clip.speed}"))
         else:

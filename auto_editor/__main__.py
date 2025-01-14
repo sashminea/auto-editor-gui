@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import platform as plat
 import re
 import sys
 from os import environ
@@ -7,7 +8,6 @@ from os.path import exists, isdir, isfile, lexists, splitext
 from subprocess import run
 
 import auto_editor
-from auto_editor.edit import edit_media
 from auto_editor.utils.func import get_stdout
 from auto_editor.utils.log import Log
 from auto_editor.utils.types import (
@@ -286,12 +286,10 @@ def download_video(my_input: str, args: Args, log: Log) -> str:
 
 
 def main() -> None:
-    subcommands = ("test", "info", "levels", "subdump", "desc", "repl", "palet")
+    commands = ("test", "info", "levels", "subdump", "desc", "repl", "palet", "cache")
 
-    if len(sys.argv) > 1 and sys.argv[1] in subcommands:
-        obj = __import__(
-            f"auto_editor.subcommands.{sys.argv[1]}", fromlist=["subcommands"]
-        )
+    if len(sys.argv) > 1 and sys.argv[1] in commands:
+        obj = __import__(f"auto_editor.cmds.{sys.argv[1]}", fromlist=["cmds"])
         obj.main(sys.argv[2:])
         return
 
@@ -320,15 +318,17 @@ def main() -> None:
         return
 
     if args.debug and not args.input:
-        import platform as plat
-
-        import av
-
-        license = av._core.library_meta["libavcodec"]["license"]
-
         print(f"OS: {plat.system()} {plat.release()} {plat.machine().lower()}")
         print(f"Python: {plat.python_version()}")
-        print(f"PyAV: {av.__version__} ({license})")
+
+        try:
+            import av
+
+            license = av._core.library_meta["libavcodec"]["license"]
+            print(f"PyAV: {av.__version__} ({license})")
+        except (ModuleNotFoundError, ImportError):
+            print("PyAV: error")
+
         print(f"Auto-Editor: {auto_editor.__version__}")
         return
 
@@ -353,6 +353,8 @@ def main() -> None:
                 if my_input.startswith("-"):
                     log.error(f"Option/Input file doesn't exist: {my_input}")
             paths.append(my_input)
+
+    from auto_editor.edit import edit_media
 
     try:
         edit_media(paths, args, log)
