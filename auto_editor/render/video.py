@@ -26,35 +26,12 @@ class VideoFrame:
     src: FileInfo
 
 
-# From: github.com/PyAV-Org/PyAV/blob/main/av/video/frame.pyx
-allowed_pix_fmt = {
-    "yuv420p",
-    "yuvj420p",
-    "yuv444p",
-    "yuvj444p",
-    "rgb48be",
-    "rgb48le",
-    "rgb64be",
-    "rgb64le",
-    "rgb24",
-    "bgr24",
-    "argb",
-    "rgba",
-    "abgr",
-    "bgra",
-    "gray",
-    "gray8",
-    "gray16be",
-    "gray16le",
-    "rgb8",
-    "bgr8",
-    "pal8",
-}
+allowed_pix_fmt = av.video.frame.supported_np_pix_fmts
 
 
 def make_solid(width: int, height: int, pix_fmt: str, bg: str) -> av.VideoFrame:
     hex_color = bg.lstrip("#").upper()
-    rgb_color = tuple(int(hex_color[i : i + 2], 16) for i in (0, 2, 4))
+    rgb_color = tuple(int(hex_color[i : i + 2], 16) for i in {0, 2, 4})
 
     rgb_array = np.full((height, width, 3), rgb_color, dtype=np.uint8)
     rgb_frame = av.VideoFrame.from_ndarray(rgb_array, format="rgb24")
@@ -65,7 +42,7 @@ def make_image_cache(tl: v3) -> dict[tuple[FileInfo, int], np.ndarray]:
     img_cache = {}
     for clip in tl.v:
         for obj in clip:
-            if isinstance(obj, TlImage) and obj.src not in img_cache:
+            if isinstance(obj, TlImage) and (obj.src, obj.width) not in img_cache:
                 with av.open(obj.src.path) as cn:
                     my_stream = cn.streams.video[0]
                     for frame in cn.decode(my_stream):
@@ -130,22 +107,36 @@ def render_av(
     log.debug(f"Tous: {tous}")
     log.debug(f"Clips: {tl.v}")
 
-    if args.video_codec == "gif":
-        _c = av.Codec("gif", "w")
-        if _c.video_formats is not None and target_pix_fmt in (
-            f.name for f in _c.video_formats
+    codec = av.Codec(args.video_codec, "w")
+
+    if codec.id == 97:  # gif
+        if codec.video_formats is not None and target_pix_fmt in (
+            f.name for f in codec.video_formats
         ):
             target_pix_fmt = target_pix_fmt
         else:
             target_pix_fmt = "rgb8"
-        del _c
+    elif codec.id == 147:  # prores
+        target_pix_fmt = "yuv422p10le"
     else:
         target_pix_fmt = (
             target_pix_fmt if target_pix_fmt in allowed_pix_fmt else "yuv420p"
         )
 
+    del codec
     ops = {"mov_flags": "faststart"}
     output_stream = output.add_stream(args.video_codec, rate=target_fps, options=ops)
+
+    cc = output_stream.codec_context
+    if args.vprofile is not None:
+        if args.vprofile.title() not in cc.profiles:
+            b = " ".join([f'"{x.lower()}"' for x in cc.profiles])
+            log.error(
+                f"`{args.vprofile}` is not a valid profile.\nprofiles supported: {b}"
+            )
+
+        cc.profile = args.vprofile.title()
+
     yield output_stream
     if not isinstance(output_stream, av.VideoStream):
         log.error(f"Not a known video codec: {args.video_codec}")
@@ -177,9 +168,9 @@ def render_av(
     color_prim = src.videos[0].color_primaries
     color_trc = src.videos[0].color_transfer
 
-    if color_range == 1 or color_range == 2:
+    if color_range in {1, 2}:
         output_stream.color_range = color_range
-    if colorspace in (0, 1) or (colorspace >= 3 and colorspace < 16):
+    if colorspace in {0, 1} or (colorspace >= 3 and colorspace < 16):
         output_stream.colorspace = colorspace
     if color_prim == 1 or (color_prim >= 4 and color_prim < 17):
         output_stream.color_primaries = color_prim
@@ -310,7 +301,7 @@ def render_av(
                 roi = array[y_start:y_end, x_start:x_end]
 
                 # Blend the overlay image with the ROI based on the opacity
-                roi = (1 - obj.opacity) * roi + obj.opacity * clipped_overlay
+                roi = (1 - obj.opacity) * roi + obj.opacity * clipped_overlay  # type: ignore
                 array[y_start:y_end, x_start:x_end] = roi
                 array = np.clip(array, 0, 255).astype(np.uint8)
 

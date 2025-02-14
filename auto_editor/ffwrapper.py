@@ -111,7 +111,7 @@ def initFileInfo(path: str, log: Log) -> FileInfo:
             vdur = 0.0
 
         fps = v.average_rate
-        if (fps is None or fps < 1) and v.name in ("png", "mjpeg", "webp"):
+        if (fps is None or fps < 1) and v.name in {"png", "mjpeg", "webp"}:
             fps = Fraction(25)
         if fps is None or fps == 0:
             fps = Fraction(30)
@@ -147,9 +147,10 @@ def initFileInfo(path: str, log: Log) -> FileInfo:
             adur = float(a.duration * a.time_base)
 
         a_cc = a.codec_context
+        name = a_cc.name if a_cc.name != "mp3float" else "mp3"
         audios += (
             AudioStream(
-                a_cc.name,
+                name,
                 0 if a_cc.sample_rate is None else a_cc.sample_rate,
                 a.layout.name,
                 a_cc.channels,

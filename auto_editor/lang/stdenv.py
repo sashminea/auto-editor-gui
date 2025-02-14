@@ -283,7 +283,7 @@ def make_standard_env() -> dict[str, Any]:
             type(node[2]) is tuple
             and node[2]
             and type(node[2][0]) is Sym
-            and node[2][0].val in ("lambda", "λ")
+            and node[2][0].val in {"lambda", "λ"}
         ):
             terms = node[2][1]
             body = node[2][2:]
@@ -1045,7 +1045,7 @@ def make_standard_env() -> dict[str, Any]:
         # reals
         "pow": Proc("pow", pow, (2, 2), is_real),
         "abs": Proc("abs", abs, (1, 1), is_real),
-        "round": Proc("round", round, (1, 1), is_real),
+        "round": Proc("round", round, (1, 2), is_real, is_int),
         "max": Proc("max", lambda *v: max(v), (1, None), is_real),
         "min": Proc("min", lambda *v: min(v), (1, None), is_real),
         "max-seq": Proc("max-seq", max, (1, 1), is_sequence),
