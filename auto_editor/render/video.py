@@ -15,7 +15,6 @@ if TYPE_CHECKING:
 
     from auto_editor.ffwrapper import FileInfo
     from auto_editor.timeline import v3
-    from auto_editor.utils.bar import Bar
     from auto_editor.utils.log import Log
     from auto_editor.utils.types import Args
 
@@ -31,7 +30,7 @@ allowed_pix_fmt = av.video.frame.supported_np_pix_fmts
 
 def make_solid(width: int, height: int, pix_fmt: str, bg: str) -> av.VideoFrame:
     hex_color = bg.lstrip("#").upper()
-    rgb_color = tuple(int(hex_color[i : i + 2], 16) for i in {0, 2, 4})
+    rgb_color = tuple(int(hex_color[i : i + 2], 16) for i in (0, 2, 4))
 
     rgb_array = np.full((height, width, 3), rgb_color, dtype=np.uint8)
     rgb_frame = av.VideoFrame.from_ndarray(rgb_array, format="rgb24")
@@ -62,7 +61,7 @@ def make_image_cache(tl: v3) -> dict[tuple[FileInfo, int], np.ndarray]:
 
 
 def render_av(
-    output: av.container.OutputContainer, tl: v3, args: Args, bar: Bar, log: Log
+    output: av.container.OutputContainer, tl: v3, args: Args, log: Log
 ) -> Any:
     from_ndarray = av.VideoFrame.from_ndarray
 
@@ -109,14 +108,14 @@ def render_av(
 
     codec = av.Codec(args.video_codec, "w")
 
-    if codec.id == 97:  # gif
+    if codec.canonical_name == "gif":
         if codec.video_formats is not None and target_pix_fmt in (
             f.name for f in codec.video_formats
         ):
             target_pix_fmt = target_pix_fmt
         else:
             target_pix_fmt = "rgb8"
-    elif codec.id == 147:  # prores
+    elif codec.canonical_name == "prores":
         target_pix_fmt = "yuv422p10le"
     else:
         target_pix_fmt = (
@@ -190,8 +189,6 @@ def render_av(
     seek = 10
     seek_frame = None
     frames_saved = 0
-
-    bar.start(tl.end, "Creating new video")
 
     bg = args.background
     null_frame = make_solid(target_width, target_height, target_pix_fmt, bg)
@@ -313,11 +310,7 @@ def render_av(
 
         if frame.format.name != target_pix_fmt:
             frame = frame.reformat(format=target_pix_fmt)
-            bar.tick(index)
-        elif index % 3 == 0:
-            bar.tick(index)
 
-        yield from_ndarray(frame.to_ndarray(), format=frame.format.name)
+        yield (index, from_ndarray(frame.to_ndarray(), format=frame.format.name))
 
-    bar.end()
     log.debug(f"Total frames saved seeking: {frames_saved}")

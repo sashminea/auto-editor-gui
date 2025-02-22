@@ -365,17 +365,35 @@ def edit_media(paths: list[str], args: Args, log: Log) -> None:
 
         # Setup video
         if ctr.default_vid != "none" and tl.v:
-            vframes = render_av(output, tl, args, bar, log)
+            vframes = render_av(output, tl, args, log)
             output_stream = next(vframes)
         else:
             output_stream, vframes = None, iter([])
 
+        no_color = log.no_color or log.machine
+        encoder_titles = []
+        if output_stream is not None:
+            name = output_stream.codec.canonical_name
+            encoder_titles.append(name if no_color else f"\033[95m{name}")
+        if audio_streams:
+            name = audio_streams[0].name
+            encoder_titles.append(name if no_color else f"\033[96m{name}")
+        if subtitle_streams:
+            name = subtitle_streams[0].name
+            encoder_titles.append(name if no_color else f"\033[32m{name}")
+
+        title = f"({os.path.splitext(output_path)[1][1:]}) "
+        if no_color:
+            title += "+".join(encoder_titles)
+        else:
+            title += "\033[0m+".join(encoder_titles) + "\033[0m"
+        bar.start(tl.end, title)
+
         # Process frames
         while True:
             audio_frames = [next(frames, None) for frames in audio_gen_frames]
-            video_frame = next(vframes, None)
+            index, video_frame = next(vframes, (0, None))
             subtitle_frames = [next(packet, None) for packet in sub_gen_frames]
-
             if (
                 all(frame is None for frame in audio_frames)
                 and video_frame is None
@@ -405,11 +423,15 @@ def edit_media(paths: list[str], args: Args, log: Log) -> None:
                 except av.FFmpegError as e:
                     log.error(e)
 
+            bar.tick(index)
+
         # Flush streams
         if output_stream is not None:
             output.mux(output_stream.encode(None))
         for audio_stream in audio_streams:
             output.mux(audio_stream.encode(None))
+
+        bar.end()
 
         # Close resources
         for audio_input in audio_inputs:
