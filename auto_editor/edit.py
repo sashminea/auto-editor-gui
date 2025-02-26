@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sys
 from fractions import Fraction
+from heapq import heappop, heappush
 from os.path import splitext
 from subprocess import run
 from typing import Any
@@ -309,6 +310,13 @@ def edit_media(paths: list[str], args: Args, log: Log) -> None:
         else:
             audio_paths = []
 
+        # Setup video
+        if ctr.default_vid != "none" and tl.v:
+            vframes = render_av(output, tl, args, log)
+            output_stream = next(vframes)
+        else:
+            output_stream, vframes = None, iter([])
+
         # Setup audio
         if audio_paths:
             try:
@@ -363,23 +371,16 @@ def edit_media(paths: list[str], args: Args, log: Log) -> None:
             subtitle_streams.append(subtitle_stream)
             sub_gen_frames.append(subtitle_input.demux(subtitles=0))
 
-        # Setup video
-        if ctr.default_vid != "none" and tl.v:
-            vframes = render_av(output, tl, args, log)
-            output_stream = next(vframes)
-        else:
-            output_stream, vframes = None, iter([])
-
         no_color = log.no_color or log.machine
         encoder_titles = []
         if output_stream is not None:
             name = output_stream.codec.canonical_name
             encoder_titles.append(name if no_color else f"\033[95m{name}")
         if audio_streams:
-            name = audio_streams[0].name
+            name = audio_streams[0].codec.canonical_name
             encoder_titles.append(name if no_color else f"\033[96m{name}")
         if subtitle_streams:
-            name = subtitle_streams[0].name
+            name = subtitle_streams[0].codec.canonical_name
             encoder_titles.append(name if no_color else f"\033[32m{name}")
 
         title = f"({os.path.splitext(output_path)[1][1:]}) "
@@ -389,11 +390,68 @@ def edit_media(paths: list[str], args: Args, log: Log) -> None:
             title += "\033[0m+".join(encoder_titles) + "\033[0m"
         bar.start(tl.end, title)
 
-        # Process frames
+        MAX_AUDIO_AHEAD = 30  # In timebase, how far audio can be ahead of video.
+        MAX_SUB_AHEAD = 30
+
+        class Priority:
+            __slots__ = ("index", "frame_type", "frame", "stream")
+
+            def __init__(self, value: int | Fraction, frame, stream):
+                self.frame_type: str = stream.type
+                assert self.frame_type in ("audio", "subtitle", "video")
+                if self.frame_type in {"audio", "subtitle"}:
+                    self.index: int | float = round(value * frame.time_base * tl.tb)
+                else:
+                    self.index = float("inf") if value is None else int(value)
+                self.frame = frame
+                self.stream = stream
+
+            def __lt__(self, other):
+                return self.index < other.index
+
+            def __eq__(self, other):
+                return self.index == other.index
+
+        # Priority queue for ordered frames by time_base.
+        frame_queue: list[Priority] = []
+        latest_audio_index = float("-inf")
+        latest_sub_index = float("-inf")
+        earliest_video_index = None
+
         while True:
-            audio_frames = [next(frames, None) for frames in audio_gen_frames]
+            if earliest_video_index is None:
+                should_get_audio = True
+                should_get_sub = True
+            else:
+                for item in frame_queue:
+                    if item.frame_type == "audio":
+                        latest_audio_index = max(latest_audio_index, item.index)
+                    elif item.frame_type == "subtitle":
+                        latest_sub_index = max(latest_sub_index, item.index)
+
+                should_get_audio = (
+                    latest_audio_index <= earliest_video_index + MAX_AUDIO_AHEAD
+                )
+                should_get_sub = (
+                    latest_sub_index <= earliest_video_index + MAX_SUB_AHEAD
+                )
+
             index, video_frame = next(vframes, (0, None))
-            subtitle_frames = [next(packet, None) for packet in sub_gen_frames]
+
+            if video_frame:
+                earliest_video_index = index
+                heappush(frame_queue, Priority(index, video_frame, output_stream))
+
+            if should_get_audio:
+                audio_frames = [next(frames, None) for frames in audio_gen_frames]
+            else:
+                audio_frames = [None]
+            if should_get_sub:
+                subtitle_frames = [next(packet, None) for packet in sub_gen_frames]
+            else:
+                subtitle_frames = [None]
+
+            # Break if no more frames
             if (
                 all(frame is None for frame in audio_frames)
                 and video_frame is None
@@ -401,24 +459,34 @@ def edit_media(paths: list[str], args: Args, log: Log) -> None:
             ):
                 break
 
-            for audio_stream, audio_frame in zip(audio_streams, audio_frames):
-                if audio_frame:
+            if should_get_audio:
+                for audio_stream, audio_frame in zip(audio_streams, audio_frames):
                     for reframe in resampler.resample(audio_frame):
-                        output.mux(audio_stream.encode(reframe))
+                        assert reframe.pts is not None
+                        heappush(
+                            frame_queue,
+                            Priority(reframe.pts, reframe, audio_stream),
+                        )
+            if should_get_sub:
+                for subtitle_stream, packet in zip(subtitle_streams, subtitle_frames):
+                    if packet and packet.pts is not None:
+                        packet.stream = subtitle_stream
+                        heappush(
+                            frame_queue, Priority(packet.pts, packet, subtitle_stream)
+                        )
 
-            for subtitle_stream, packet in zip(subtitle_streams, subtitle_frames):
-                if not packet or packet.dts is None:
-                    continue
-                packet.stream = subtitle_stream
-                output.mux(packet)
-
-            if video_frame:
+            while frame_queue and frame_queue[0].index <= index:
+                item = heappop(frame_queue)
+                frame_type = item.frame_type
                 try:
-                    output.mux(output_stream.encode(video_frame))
+                    if frame_type in {"video", "audio"}:
+                        output.mux(item.stream.encode(item.frame))
+                    elif frame_type == "subtitle":
+                        output.mux(item.frame)
                 except av.error.ExternalError:
                     log.error(
-                        f"Generic error for encoder: {output_stream.name}\n"
-                        "Perhaps video quality settings are too low?"
+                        f"Generic error for encoder: {item.stream.name}\n"
+                        f"at {item.index} time_base\nPerhaps video quality settings are too low?"
                     )
                 except av.FFmpegError as e:
                     log.error(e)
