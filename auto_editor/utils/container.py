@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TypedDict
 
-import bv
-from bv.codec import Codec
+import av
+from av.codec import Codec
 
 from auto_editor.utils.log import Log
 
@@ -64,7 +64,7 @@ def codec_type(x: str) -> str:
 
 def container_constructor(ext: str, log: Log) -> Container:
     try:
-        container = bv.open(f".{ext}", "w")
+        container = av.open(f".{ext}", "w")
     except ValueError:
         log.error(f"Could not find a suitable format for extension: {ext}")
 

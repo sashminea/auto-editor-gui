@@ -7,8 +7,8 @@
     "doc": "docs"
   },
   "scripts": {
-  "start": "node create-folder.js && npm run build && electron .",
-  "build": "tsc"
+    "start": "node create-folder.js && npm run build && electron .",
+    "build": "tsc"
   },
   "keywords": [],
   "author": "",

@@ -11,7 +11,7 @@ from hashlib import sha256
 from tempfile import mkdtemp
 from time import perf_counter
 
-import bv
+import av as bv
 import numpy as np
 
 from auto_editor.ffwrapper import FileInfo

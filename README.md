@@ -77,7 +77,17 @@ Ensure you have the following installed:
    npm install
    ```
 
-4. Navigate to the `frontend` folder and install dependencies and start localhost:
+4. Install python dependencies:
+
+   ```bash
+   pip install av
+   pip install numpy
+   pip install yt-dlp
+   pip install auto-editor
+   ```
+
+
+5. Navigate to the `frontend` folder and install dependencies and start localhost:
 
    ```bash
    cd frontend
@@ -85,7 +95,7 @@ Ensure you have the following installed:
    npm run dev
    ```
 
-5. Navigate back to the root directory and run the electron app:
+6. Navigate back to the root directory and run the electron app:
 
    ```bash
    cd ..
