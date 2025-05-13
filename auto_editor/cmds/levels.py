@@ -5,11 +5,11 @@ from dataclasses import dataclass, field
 from fractions import Fraction
 from typing import TYPE_CHECKING
 
-import av
+import bv
 import numpy as np
 
 from auto_editor.analyze import *
-from auto_editor.ffwrapper import initFileInfo
+from auto_editor.ffwrapper import FileInfo
 from auto_editor.lang.palet import env
 from auto_editor.lib.contracts import is_bool, is_nat, is_nat1, is_str, is_void, orc
 from auto_editor.utils.bar import initBar
@@ -87,7 +87,7 @@ def main(sys_args: list[str] = sys.argv[1:]) -> None:
     bar = initBar("none")
     log = Log(quiet=True)
 
-    sources = [initFileInfo(path, log) for path in args.input]
+    sources = [FileInfo.init(path, log) for path in args.input]
     if len(sources) < 1:
         log.error("levels needs at least one input file")
 
@@ -128,13 +128,13 @@ def main(sys_args: list[str] = sys.argv[1:]) -> None:
             except ParserError as e:
                 log.error(e)
 
-        levels = Levels(src, tb, bar, False, log, strict=True)
+        levels = initLevels(src, tb, bar, False, log)
         try:
             if method == "audio":
                 if (arr := levels.read_cache("audio", (obj["stream"],))) is not None:
                     print_arr(arr)
                 else:
-                    container = av.open(src.path, "r")
+                    container = bv.open(src.path, "r")
                     audio_stream = container.streams.audio[obj["stream"]]
 
                     values = []
@@ -155,7 +155,7 @@ def main(sys_args: list[str] = sys.argv[1:]) -> None:
                 if (arr := levels.read_cache("motion", mobj)) is not None:
                     print_arr(arr)
                 else:
-                    container = av.open(src.path, "r")
+                    container = bv.open(src.path, "r")
                     video_stream = container.streams.video[obj["stream"]]
 
                     values = []

@@ -4,24 +4,26 @@ import os
 import sys
 from difflib import get_close_matches
 from fractions import Fraction
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from auto_editor.ffwrapper import FileInfo, initFileInfo
-from auto_editor.lang.json import Lexer, Parser, dump
+from auto_editor.ffwrapper import FileInfo
+from auto_editor.json import dump, load
 from auto_editor.lib.err import MyError
 from auto_editor.timeline import (
-    ASpace,
+    Template,
     TlAudio,
     TlVideo,
-    VSpace,
     audio_builder,
     v1,
     v3,
     visual_objects,
 )
 from auto_editor.utils.cmdkw import ParserError, Required, pAttrs
-from auto_editor.utils.log import Log
 from auto_editor.utils.types import CoerceError
+
+if TYPE_CHECKING:
+    from auto_editor.timeline import ASpace, VSpace
+    from auto_editor.utils.log import Log
 
 """
 Make a pre-edited file reference that can be inputted back into auto-editor.
@@ -59,7 +61,7 @@ def read_v3(tl: Any, log: Log) -> v3:
     def make_src(v: str) -> FileInfo:
         if v in srcs:
             return srcs[v]
-        temp = initFileInfo(v, log)
+        temp = FileInfo.init(v, log)
         srcs[v] = temp
         return temp
 
@@ -151,11 +153,11 @@ def read_v3(tl: Any, log: Log) -> v3:
             a.append(a_out)
 
     try:
-        src = srcs[next(iter(srcs))]
+        T = Template.init(srcs[next(iter(srcs))])
     except StopIteration:
-        src = None
+        T = Template(sr, "stereo", res, [], [])
 
-    return v3(src, tb, sr, res, bg, v, a, v1=None)
+    return v3(tb, bg, T, v, a, v1=None)
 
 
 def read_v1(tl: Any, log: Log) -> v3:
@@ -168,7 +170,7 @@ def read_v1(tl: Any, log: Log) -> v3:
 
     check_file(path, log)
 
-    src = initFileInfo(path, log)
+    src = FileInfo.init(path, log)
 
     vtl: VSpace = []
     atl: ASpace = [[] for _ in range(len(src.audios))]
@@ -207,11 +209,9 @@ def read_v1(tl: Any, log: Log) -> v3:
             atl[a].append(TlAudio(c.start, c.dur, c.src, c.offset, c.speed, 1, a))
 
     return v3(
-        src,
         src.get_fps(),
-        src.get_sr(),
-        src.get_res(),
         "#000",
+        Template.init(src),
         vtl,
         atl,
         v1(src, chunks),
@@ -219,11 +219,13 @@ def read_v1(tl: Any, log: Log) -> v3:
 
 
 def read_json(path: str, log: Log) -> v3:
-    with open(path, encoding="utf-8", errors="ignore") as f:
-        try:
-            tl = Parser(Lexer(path, f)).expr()
-        except MyError as e:
-            log.error(e)
+    try:
+        with open(path, encoding="utf-8", errors="ignore") as f:
+            tl = load(path, f)
+    except FileNotFoundError:
+        log.error(f"File not found: {path}")
+    except MyError as e:
+        log.error(e)
 
     check_attrs(tl, log, "version")
 

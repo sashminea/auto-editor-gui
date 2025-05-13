@@ -1,16 +1,22 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
+
+import bv
 
 from auto_editor.analyze import mut_remove_large, mut_remove_small
 from auto_editor.lib.contracts import *
 from auto_editor.lib.data_structs import *
+from auto_editor.lib.err import MyError
 
 from .palet import Syntax, env, is_boolarr, is_iterable, my_eval, p_slice, raise_, ref
 
 if TYPE_CHECKING:
+    from fractions import Fraction
     from typing import Any, Literal
 
+    import numpy as np
     from numpy.typing import NDArray
 
     Number = int | float | complex | Fraction
@@ -749,6 +755,13 @@ def make_standard_env() -> dict[str, Any]:
             raise MyError("@r: attribute must be an identifier")
 
         base = my_eval(env, node[1])
+
+        if hasattr(base, "__pyx_vtable__"):
+            try:
+                return getattr(base, node[2].val)
+            except AttributeError as e:
+                raise MyError(e)
+
         if type(base) is PaletClass:
             if type(name := node[2]) is not Sym:
                 raise MyError("@r: class attribute must be an identifier")
@@ -918,7 +931,7 @@ def make_standard_env() -> dict[str, Any]:
         except Exception:
             raise MyError("hash-ref: invalid key")
 
-    def hash_set(h: dict, k: object, v: object) -> None:
+    def hash_set(h: dict[object, object], k: object, v: object) -> None:
         h[k] = v
 
     def hash_remove(h: dict, v: object) -> None:
@@ -943,7 +956,7 @@ def make_standard_env() -> dict[str, Any]:
         except Exception:
             return False
 
-    def change_file_ext(a, ext) -> str:
+    def change_file_ext(a: str, ext: str) -> str:
         import os.path
 
         base_name = os.path.splitext(a)[0]
@@ -1171,6 +1184,9 @@ def make_standard_env() -> dict[str, Any]:
             "string->vector", lambda s: [Char(c) for c in s], (1, 1), is_str
         ),
         "range->vector": Proc("range->vector", list, (1, 1), is_range),
+        # av
+        "encoder": Proc("encoder", lambda x: bv.Codec(x, "w"), (1, 1), is_str),
+        "decoder": Proc("decoder", lambda x: bv.Codec(x), (1, 1), is_str),
         # reflexion
         "var-exists?": Proc("var-exists?", lambda sym: sym.val in env, (1, 1), is_symbol),
         "rename": Syntax(syn_rename),

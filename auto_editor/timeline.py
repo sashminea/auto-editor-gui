@@ -3,16 +3,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from auto_editor.ffwrapper import initFileInfo, mux
+from auto_editor.ffwrapper import FileInfo, mux
 from auto_editor.lib.contracts import *
 from auto_editor.utils.cmdkw import Required, pAttr, pAttrs
-from auto_editor.utils.types import natural, number, parse_color, threshold
+from auto_editor.utils.types import CoerceError, natural, number, parse_color
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
     from fractions import Fraction
     from pathlib import Path
-    from typing import Any
 
     from auto_editor.ffwrapper import FileInfo
     from auto_editor.utils.chunks import Chunks
@@ -128,6 +127,13 @@ class TlRect:
         }
 
 
+def threshold(val: str | float) -> float:
+    num = number(val)
+    if num > 1 or num < 0:
+        raise CoerceError(f"'{val}': Threshold must be between 0 and 1 (0%-100%)")
+    return num
+
+
 video_builder = pAttrs(
     "video",
     pAttr("start", Required, is_nat, natural),
@@ -180,13 +186,52 @@ ALayer = list[TlAudio]
 ASpace = list[ALayer]
 
 
+@dataclass(slots=True)
+class AudioTemplate:
+    lang: str | None
+
+
+@dataclass(slots=True)
+class SubtitleTemplate:
+    lang: str | None
+
+
+@dataclass(slots=True)
+class Template:
+    sr: int
+    layout: str
+    res: tuple[int, int]
+    audios: list[AudioTemplate]
+    subtitles: list[SubtitleTemplate]
+
+    @classmethod
+    def init(
+        self,
+        src: FileInfo,
+        sr: int | None = None,
+        layout: str | None = None,
+        res: tuple[int, int] | None = None,
+    ) -> Template:
+        alist = [AudioTemplate(x.lang) for x in src.audios]
+        slist = [SubtitleTemplate(x.lang) for x in src.subtitles]
+
+        if sr is None:
+            sr = src.get_sr()
+
+        if layout is None:
+            layout = "stereo" if not src.audios else src.audios[0].layout
+
+        if res is None:
+            res = src.get_res()
+
+        return Template(sr, layout, res, alist, slist)
+
+
 @dataclass
 class v3:
-    src: FileInfo | None  # Used as a template for timeline settings
     tb: Fraction
-    sr: int
-    res: tuple[int, int]
     background: str
+    template: Template
     v: VSpace
     a: ASpace
     v1: v1 | None  # Is it v1 compatible (linear and only one source)?
@@ -251,7 +296,7 @@ video\n"""
                 seen.add(source.path)
                 yield source
 
-    def _duration(self, layer: Any) -> int:
+    def _duration(self, layer: VSpace | ASpace) -> int:
         total_dur = 0
         for clips in layer:
             dur = 0
@@ -279,20 +324,31 @@ video\n"""
 
         return {
             "version": "3",
-            "resolution": self.res,
             "timebase": f"{self.tb.numerator}/{self.tb.denominator}",
-            "samplerate": self.sr,
             "background": self.background,
+            "resolution": self.T.res,
+            "samplerate": self.T.sr,
+            "layout": self.T.layout,
             "v": v,
             "a": a,
         }
 
+    @property
+    def T(self) -> Template:
+        return self.template
 
-def make_tracks_dir(path: Path) -> Path:
+    @property
+    def res(self) -> tuple[int, int]:
+        return self.T.res
+
+    @property
+    def sr(self) -> int:
+        return self.T.sr
+
+
+def make_tracks_dir(tracks_dir: Path, path: Path) -> None:
     from os import mkdir
     from shutil import rmtree
-
-    tracks_dir = path.parent / f"{path.stem}_tracks"
 
     try:
         mkdir(tracks_dir)
@@ -300,20 +356,23 @@ def make_tracks_dir(path: Path) -> Path:
         rmtree(tracks_dir)
         mkdir(tracks_dir)
 
-    return tracks_dir
 
-
-def set_stream_to_0(tl: v3, log: Log) -> None:
-    src = tl.src
-    assert src is not None
-    fold = make_tracks_dir(src.path)
+def set_stream_to_0(src: FileInfo, tl: v3, log: Log) -> None:
+    dir_exists = False
     cache: dict[Path, FileInfo] = {}
 
     def make_track(i: int, path: Path) -> FileInfo:
+        nonlocal dir_exists
+
+        fold = path.parent / f"{path.stem}_tracks"
+        if not dir_exists:
+            make_tracks_dir(fold, path)
+            dir_exists = True
+
         newtrack = fold / f"{path.stem}_{i}.wav"
         if newtrack not in cache:
             mux(path, output=newtrack, stream=i)
-            cache[newtrack] = initFileInfo(f"{newtrack}", log)
+            cache[newtrack] = FileInfo.init(f"{newtrack}", log)
         return cache[newtrack]
 
     for alayer in tl.a:

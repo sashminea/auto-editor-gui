@@ -6,18 +6,19 @@ from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
 
-from auto_editor.analyze import Levels
+from auto_editor.analyze import initLevels
 from auto_editor.ffwrapper import FileInfo
-from auto_editor.lang.palet import Lexer, Parser, env, interpret, is_boolarr
+from auto_editor.lang.palet import Lexer, Parser, env, interpret, is_boolean_array
 from auto_editor.lib.data_structs import print_str
 from auto_editor.lib.err import MyError
-from auto_editor.timeline import ASpace, TlAudio, TlVideo, VSpace, v1, v3
+from auto_editor.timeline import ASpace, Template, TlAudio, TlVideo, VSpace, v1, v3
 from auto_editor.utils.func import mut_margin
-from auto_editor.utils.types import Args, CoerceError, time
+from auto_editor.utils.types import CoerceError, time
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
 
+    from auto_editor.__main__ import Args
     from auto_editor.utils.bar import Bar
     from auto_editor.utils.chunks import Chunks
     from auto_editor.utils.log import Log
@@ -98,16 +99,17 @@ def parse_time(val: str, arr: NDArray, tb: Fraction) -> int:  # raises: `CoerceE
 
 
 def make_timeline(
-    sources: list[FileInfo],
-    args: Args,
-    sr: int,
-    bar: Bar,
-    log: Log,
+    sources: list[FileInfo], args: Args, sr: int, bar: Bar, log: Log
 ) -> v3:
     inp = None if not sources else sources[0]
 
     if inp is None:
-        tb, res = Fraction(30), (1920, 1080)
+        tb = (
+            Fraction(30)
+            if args.frame_rate is None
+            else make_sane_timebase(args.frame_rate)
+        )
+        res = (1920, 1080) if args.resolution is None else args.resolution
     else:
         tb = make_sane_timebase(
             inp.get_fps() if args.frame_rate is None else args.frame_rate
@@ -122,7 +124,6 @@ def make_timeline(
 
     has_loud = np.array([], dtype=np.bool_)
     src_index = np.array([], dtype=np.int32)
-    concat = np.concatenate
 
     try:
         stdenv = __import__("auto_editor.lang.stdenv", fromlist=["lang"])
@@ -137,6 +138,7 @@ def make_timeline(
             parser = Parser(Lexer("config.pal", file.read()))
             interpret(env, parser)
 
+    results = []
     for i, src in enumerate(sources):
         try:
             parser = Parser(Lexer("`--edit`", args.edit))
@@ -144,32 +146,43 @@ def make_timeline(
                 log.debug(f"edit: {parser}")
 
             env["timebase"] = tb
-            env["src"] = f"{src.path}"
-            env["@levels"] = Levels(src, tb, bar, args.no_cache, log, len(sources) < 2)
+            env["@levels"] = initLevels(src, tb, bar, args.no_cache, log)
 
-            results = interpret(env, parser)
-
-            if len(results) == 0:
+            inter_result = interpret(env, parser)
+            if len(inter_result) == 0:
                 log.error("Expression in --edit must return a bool-array, got nothing")
 
-            result = results[-1]
+            result = inter_result[-1]
             if callable(result):
                 result = result()
         except MyError as e:
             log.error(e)
 
-        if not is_boolarr(result):
+        if not is_boolean_array(result):
             log.error(
                 f"Expression in --edit must return a bool-array, got {print_str(result)}"
             )
-        assert isinstance(result, np.ndarray)
-
         mut_margin(result, start_margin, end_margin)
+        results.append(result)
 
-        has_loud = concat((has_loud, result))
-        src_index = concat((src_index, np.full(len(result), i, dtype=np.int32)))
+    if all(len(result) == 0 for result in results):
+        if "subtitle" in args.edit:
+            log.error("No file(s) have the selected subtitle stream.")
+        if "motion" in args.edit:
+            log.error("No file(s) have the selected video stream.")
+        if "audio" in args.edit:
+            log.error("No file(s) have the selected audio stream.")
 
-    assert len(has_loud) > 0
+    src_indexes = []
+    for i in range(0, len(results)):
+        if len(results[i]) == 0:
+            results[i] = initLevels(sources[i], tb, bar, args.no_cache, log).all()
+        src_indexes.append(np.full(len(results[i]), i, dtype=np.int32))
+
+    has_loud = np.concatenate(results)
+    src_index = np.concatenate(src_indexes)
+    if len(has_loud) == 0:
+        log.error("Empty timeline. Nothing to do.")
 
     # Setup for handling custom speeds
     speed_index = has_loud.astype(np.uint)
@@ -290,4 +303,13 @@ def make_timeline(
     else:
         v1_compatiable = None
 
-    return v3(inp, tb, sr, res, args.background, vtl, atl, v1_compatiable)
+    if len(vtl) == 0 and len(atl) == 0:
+        log.error("Timeline is empty, nothing to do.")
+
+    if inp is None:
+        layout = "stereo" if args.audio_layout is None else args.audio_layout
+        template = Template(sr, layout, res, [], [])
+    else:
+        template = Template.init(inp, sr, args.audio_layout, res)
+
+    return v3(tb, args.background, template, vtl, atl, v1_compatiable)

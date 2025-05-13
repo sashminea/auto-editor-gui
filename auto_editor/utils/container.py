@@ -3,8 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TypedDict
 
-import av
-from av.codec import Codec
+import bv
+from bv.codec import Codec
+
+from auto_editor.utils.log import Log
 
 
 class DictContainer(TypedDict, total=False):
@@ -60,18 +62,23 @@ def codec_type(x: str) -> str:
         return ""
 
 
-def container_constructor(ext: str) -> Container:
-    with av.open(f".{ext}", "w") as container:
-        codecs = container.supported_codecs
-        if ext == "webm":
-            vdefault = "vp9"
-        else:
-            vdefault = container.default_video_codec
-        adefault = container.default_audio_codec
-        sdefault = container.default_subtitle_codec
-        if sdefault == "none" and ext == "mp4":
-            sdefault = "srt"
+def container_constructor(ext: str, log: Log) -> Container:
+    try:
+        container = bv.open(f".{ext}", "w")
+    except ValueError:
+        log.error(f"Could not find a suitable format for extension: {ext}")
 
+    codecs = container.supported_codecs
+    if ext == "webm":
+        vdefault = "vp9"
+    else:
+        vdefault = container.default_video_codec
+    adefault = container.default_audio_codec
+    sdefault = container.default_subtitle_codec
+    if sdefault == "none" and ext == "mp4":
+        sdefault = "srt"
+
+    container.close()
     vcodecs = set()
     acodecs = set()
     scodecs = set()

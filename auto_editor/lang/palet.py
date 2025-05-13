@@ -9,11 +9,11 @@ from dataclasses import dataclass
 from difflib import get_close_matches
 from fractions import Fraction
 from io import StringIO
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 
-from auto_editor.analyze import LevelError, mut_remove_small
+from auto_editor.analyze import LevelError, Levels, mut_remove_small
 from auto_editor.lib.contracts import *
 from auto_editor.lib.data_structs import *
 from auto_editor.lib.err import MyError
@@ -21,7 +21,7 @@ from auto_editor.utils.func import boolop
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from typing import Any, NoReturn
+    from typing import Any, NoReturn, TypeGuard
 
     from numpy.typing import NDArray
 
@@ -510,15 +510,16 @@ def p_slice(
     return seq[start:end:step]
 
 
+def is_boolean_array(v: object) -> TypeGuard[np.ndarray]:
+    return isinstance(v, np.ndarray) and v.dtype.kind == "b"
+
+
 is_iterable = Contract(
     "iterable?",
     lambda v: type(v) in {str, range, list, tuple, dict, Quoted}
     or isinstance(v, np.ndarray),
 )
-is_boolarr = Contract(
-    "bool-array?",
-    lambda v: isinstance(v, np.ndarray) and v.dtype.kind == "b",
-)
+is_boolarr = Contract("bool-array?", is_boolean_array)
 
 
 def raise_(msg: str | Exception) -> NoReturn:
@@ -568,13 +569,10 @@ def edit_audio(
     if "@levels" not in env:
         raise MyError("Can't use `audio` if there's no input media")
 
-    levels = env["@levels"]
-    src = levels.src
-    strict = levels.strict
-
+    levels = cast(Levels, env["@levels"])
     stream_data: NDArray[np.bool_] | None = None
     if stream == Sym("all"):
-        stream_range = range(0, len(src.audios))
+        stream_range = range(0, len(levels.container.streams.audio))
     else:
         assert isinstance(stream, int)
         stream_range = range(stream, stream + 1)
@@ -586,17 +584,15 @@ def edit_audio(
                 stream_data = audio_list
             else:
                 stream_data = boolop(stream_data, audio_list, np.logical_or)
-    except LevelError as e:
-        raise_(e) if strict else levels.all()
+    except LevelError:
+        return np.array([], dtype=np.bool_)
 
-    if stream_data is not None:
-        mut_remove_small(stream_data, minclip, replace=1, with_=0)
-        mut_remove_small(stream_data, mincut, replace=0, with_=1)
+    if stream_data is None:
+        return np.array([], dtype=np.bool_)
 
-        return stream_data
-
-    stream = 0 if stream == Sym("all") else stream
-    return raise_(f"audio stream '{stream}' does not exist") if strict else levels.all()
+    mut_remove_small(stream_data, minclip, replace=1, with_=0)
+    mut_remove_small(stream_data, mincut, replace=0, with_=1)
+    return stream_data
 
 
 def edit_motion(
@@ -608,18 +604,18 @@ def edit_motion(
     if "@levels" not in env:
         raise MyError("Can't use `motion` if there's no input media")
 
-    levels = env["@levels"]
+    levels = cast(Levels, env["@levels"])
     try:
         return levels.motion(stream, blur, width) >= threshold
-    except LevelError as e:
-        return raise_(e) if levels.strict else levels.all()
+    except LevelError:
+        return np.array([], dtype=np.bool_)
 
 
 def edit_subtitle(pattern, stream=0, **kwargs):
     if "@levels" not in env:
         raise MyError("Can't use `subtitle` if there's no input media")
 
-    levels = env["@levels"]
+    levels = cast(Levels, env["@levels"])
     if "ignore-case" not in kwargs:
         kwargs["ignore-case"] = False
     if "max-count" not in kwargs:
@@ -628,8 +624,8 @@ def edit_subtitle(pattern, stream=0, **kwargs):
     max_count = kwargs["max-count"]
     try:
         return levels.subtitle(pattern, stream, ignore_case, max_count)
-    except LevelError as e:
-        return raise_(e) if levels.strict else levels.all()
+    except LevelError:
+        return np.array([], dtype=np.bool_)
 
 
 class StackTraceManager:
@@ -650,8 +646,8 @@ stack_trace_manager = StackTraceManager()
 
 
 def my_eval(env: Env, node: object) -> Any:
-    def make_trace(sym: Sym) -> str:
-        return f"  at {sym.val} ({sym.lineno}:{sym.column})"
+    def make_trace(sym: object) -> str:
+        return f"  at {sym.val} ({sym.lineno}:{sym.column})" if type(sym) is Sym else ""
 
     if type(node) is Sym:
         val = env.get(node.val)
@@ -751,7 +747,7 @@ env.update({
 # fmt: on
 
 
-def interpret(env: Env, parser: Parser) -> list:
+def interpret(env: Env, parser: Parser) -> list[object]:
     result = []
 
     try:

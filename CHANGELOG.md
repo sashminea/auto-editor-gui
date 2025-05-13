@@ -1,4 +1,58 @@
+# 27.1.1
+
+## Fixes
+ - Avoid making empty `*_tracks` directories.
+ - Require `--output` if no suitable name can be auto-selected.
+
+**Full Changelog**: https://github.com/WyattBlue/auto-editor/compare/27.1.0...27.1.1
+
+
+# 27.1.0
+
+## Features
+ - Stream the input source's audio samples, instead of memory mapping an entire wav file.
+ - Add `--audio-layout`, which allows changing the number of channels (`mono`, `stereo`, etc.).
+
+## Fixes
+ - Print an error message instead of raising an exception if `--export premiere` is used with an empty timeline.
+
+**Full Changelog**: https://github.com/WyattBlue/auto-editor/compare/27.0.0...27.1.0
+
+
+# 27.0.0
+
+## Major
+ - Deprecate `--keep-tracks-separate`, it's behavior is now the default. Use `--mix-audio-streams` for the old behavior.
+ - Remove deprecated "copy" codec (auto-editor never does remuxing).
+ - Require NumPy >= 2.
+ - Switch from PyAV to [BasswoodAV](https://github.com/basswood-io/BasswoodAV)
+
+## Features
+ - Make video rendering 11% faster, rendering should be 19% faster overall.
+
+**Full Changelog**: https://github.com/WyattBlue/auto-editor/compare/26.3.3...27.0.0
+
+
+# 26.3.3
+
+## Fixes
+ - Suppress warnings if movflags do not apply.
+ - Add `--faststart` and `--no-faststart` to enable/disable ffmpeg's `-movflags +faststart`.
+
+**Full Changelog**: https://github.com/WyattBlue/auto-editor/compare/26.3.2...26.3.3
+
+
+# 26.3.2
+
+## Fixes
+  - Fix regression in 26.3.0 that caused audio-only exports to have no data.
+  - Support outputting fragmented mp4/mov files with `--fragmented`.
+
+**Full Changelog**: https://github.com/WyattBlue/auto-editor/compare/26.3.1...26.3.2
+
+
 # 26.3.1
+
 ## Fixes
  - Mux frames in the correct order, this fixes problems with media player's seeking in large files.
  - Lay out the video stream first.

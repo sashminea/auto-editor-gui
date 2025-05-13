@@ -1,30 +1,26 @@
-from __future__ import annotations
-
+import concurrent.futures
+import hashlib
 import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from fractions import Fraction
+from hashlib import sha256
+from tempfile import mkdtemp
 from time import perf_counter
-from typing import TYPE_CHECKING
 
-import av
+import bv
 import numpy as np
 
-from auto_editor.ffwrapper import FileInfo, initFileInfo
+from auto_editor.ffwrapper import FileInfo
 from auto_editor.lang.palet import Lexer, Parser, env, interpret
 from auto_editor.lang.stdenv import make_standard_env
 from auto_editor.lib.data_structs import Char
 from auto_editor.lib.err import MyError
 from auto_editor.utils.log import Log
 from auto_editor.vanparse import ArgumentParser
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
-    from typing import Any
-
-    from auto_editor.vanparse import ArgumentParser
 
 
 @dataclass(slots=True)
@@ -53,38 +49,57 @@ def pipe_to_console(cmd: list[str]) -> tuple[int, str, str]:
     return process.returncode, stdout.decode("utf-8"), stderr.decode("utf-8")
 
 
+all_files = (
+    "aac.m4a",
+    "alac.m4a",
+    "wav/pcm-f32le.wav",
+    "wav/pcm-s32le.wav",
+    "multi-track.mov",
+    "mov_text.mp4",
+    "testsrc.mkv",
+)
+log = Log()
+
+
+def fileinfo(path: str) -> FileInfo:
+    return FileInfo.init(path, log)
+
+
+def calculate_sha256(filename: str) -> str:
+    sha256_hash = hashlib.sha256()
+    with open(filename, "rb") as f:
+        for byte_block in iter(lambda: f.read(4096), b""):
+            sha256_hash.update(byte_block)
+    return sha256_hash.hexdigest()
+
+
+class SkipTest(Exception):
+    pass
+
+
 class Runner:
     def __init__(self) -> None:
         self.program = [sys.executable, "-m", "auto_editor"]
+        self.temp_dir = mkdtemp()
 
-    def main(
-        self, inputs: list[str], cmd: list[str], output: str | None = None
-    ) -> str | None:
-        cmd = self.program + inputs + cmd + ["--no-open"]
-
-        if output is not None:
+    def main(self, inputs: list[str], cmd: list[str], output: str | None = None) -> str:
+        assert inputs
+        cmd = self.program + inputs + cmd + ["--no-open", "--progress", "none"]
+        temp_dir = self.temp_dir
+        if not os.path.exists(temp_dir):
+            raise ValueError("Where's the temp dir")
+        if output is None:
+            new_root = sha256("".join(cmd).encode()).hexdigest()[:16]
+            output = os.path.join(temp_dir, new_root)
+        else:
             root, ext = os.path.splitext(output)
             if inputs and ext == "":
                 output = root + os.path.splitext(inputs[0])[1]
-            cmd += ["--output", output]
+            output = os.path.join(temp_dir, output)
 
-        if output is None and inputs:
-            root, ext = os.path.splitext(inputs[0])
-
-            if "--export_as_json" in cmd:
-                ext = ".json"
-            elif "-exp" in cmd:
-                ext = ".xml"
-            elif "-exf" in cmd:
-                ext = ".fcpxml"
-            elif "-exs" in cmd:
-                ext = ".mlt"
-
-            output = f"{root}_ALTERED{ext}"
-
-        returncode, stdout, stderr = pipe_to_console(cmd)
+        returncode, stdout, stderr = pipe_to_console(cmd + ["--output", output])
         if returncode > 0:
-            raise Exception(f"{stdout}\n{stderr}\n")
+            raise Exception(f"Test returned: {returncode}\n{stdout}\n{stderr}\n")
 
         return output
 
@@ -106,182 +121,135 @@ class Runner:
         else:
             raise Exception("Program should not respond with code 0 but did!")
 
-
-def run_tests(tests: list[Callable], args: TestArgs) -> None:
-    def clean_all() -> None:
-        def clean(the_dir: str) -> None:
-            for item in os.listdir(the_dir):
-                if "_ALTERED" in item:
-                    os.remove(os.path.join(the_dir, item))
-                if item.endswith("_tracks"):
-                    shutil.rmtree(os.path.join(the_dir, item))
-
-        clean("resources")
-        clean(os.getcwd())
-
-    if args.only != []:
-        tests = list(filter(lambda t: t.__name__ in args.only, tests))
-
-    total_time = 0.0
-
-    passed = 0
-    total = len(tests)
-    for index, test in enumerate(tests, start=1):
-        name = test.__name__
-        start = perf_counter()
-        outputs = None
-
-        try:
-            outputs = test()
-            dur = perf_counter() - start
-            total_time += dur
-        except KeyboardInterrupt:
-            print("Testing Interrupted by User.")
-            clean_all()
-            sys.exit(1)
-        except Exception as e:
-            dur = perf_counter() - start
-            total_time += dur
-            print(
-                f"{name:<24} ({index}/{total})  {round(dur, 2):<4} secs  \033[1;31m[FAILED]\033[0m",
-                flush=True,
-            )
-            if args.no_fail_fast:
-                print(f"\n{e}")
-            else:
-                print("")
-                clean_all()
-                raise e
-        else:
-            passed += 1
-            print(
-                f"{name:<24} ({index}/{total})  {round(dur, 2):<4} secs  [\033[1;32mPASSED\033[0m]",
-                flush=True,
-            )
-        if outputs is not None:
-            if isinstance(outputs, str):
-                outputs = [outputs]
-
-            for out in outputs:
-                try:
-                    os.remove(out)
-                except FileNotFoundError:
-                    pass
-
-    print(f"\nCompleted\n{passed}/{total}\n{round(total_time, 2)} secs")
-    clean_all()
-
-
-def main(sys_args: list[str] | None = None):
-    if sys_args is None:
-        sys_args = sys.argv[1:]
-
-    args = test_options(ArgumentParser("test")).parse_args(TestArgs, sys_args)
-
-    run = Runner()
-    log = Log()
-
-    def fileinfo(path: str) -> FileInfo:
-        return initFileInfo(path, log)
-
-    ### Tests ###
-
-    all_files = (
-        "aac.m4a",
-        "alac.m4a",
-        "wav/pcm-f32le.wav",
-        "wav/pcm-s32le.wav",
-        "multi-track.mov",
-        "mov_text.mp4",
-        "testsrc.mkv",
-    )
-
-    ## API Tests ##
-
-    def help_tests():
+    def test_help(self):
         """check the help option, its short, and help on options and groups."""
-        run.raw(["--help"])
-        run.raw(["-h"])
-        run.raw(["--margin", "--help"])
-        run.raw(["--edit", "-h"])
-        run.raw(["--help", "--help"])
-        run.raw(["-h", "--help"])
-        run.raw(["--help", "-h"])
+        self.raw(["--help"])
+        self.raw(["-h"])
+        self.raw(["--margin", "--help"])
+        self.raw(["--edit", "-h"])
+        self.raw(["--help", "--help"])
+        self.raw(["-h", "--help"])
+        self.raw(["--help", "-h"])
 
-    def version_test():
+    def test_version(self):
         """Test version flags and debug by itself."""
-        run.raw(["--version"])
-        run.raw(["-V"])
+        self.raw(["--version"])
+        self.raw(["-V"])
 
-    def parser_test():
-        run.check(["example.mp4", "--video-speed"], "needs argument")
+    def test_parser(self):
+        self.check(["example.mp4", "--video-speed"], "needs argument")
 
-    def info():
-        run.raw(["info", "example.mp4"])
-        run.raw(["info", "resources/only-video/man-on-green-screen.mp4"])
-        run.raw(["info", "resources/multi-track.mov"])
-        run.raw(["info", "resources/new-commentary.mp3"])
-        run.raw(["info", "resources/testsrc.mkv"])
+    def info(self):
+        self.raw(["info", "example.mp4"])
+        self.raw(["info", "resources/only-video/man-on-green-screen.mp4"])
+        self.raw(["info", "resources/multi-track.mov"])
+        self.raw(["info", "resources/new-commentary.mp3"])
+        self.raw(["info", "resources/testsrc.mkv"])
 
-    def levels():
-        run.raw(["levels", "resources/multi-track.mov"])
-        run.raw(["levels", "resources/new-commentary.mp3"])
+    def levels(self):
+        self.raw(["levels", "resources/multi-track.mov"])
+        self.raw(["levels", "resources/new-commentary.mp3"])
 
-    def subdump():
-        run.raw(["subdump", "resources/mov_text.mp4"])
-        run.raw(["subdump", "resources/webvtt.mkv"])
+    def subdump(self):
+        self.raw(["subdump", "resources/mov_text.mp4"])
+        self.raw(["subdump", "resources/webvtt.mkv"])
 
-    def desc():
-        run.raw(["desc", "example.mp4"])
+    def desc(self):
+        self.raw(["desc", "example.mp4"])
 
-    def example():
-        out = run.main(inputs=["example.mp4"], cmd=[])
+    def test_movflags(self) -> None:
+        file = "resources/testsrc.mp4"
+        out = self.main([file], ["--faststart"]) + ".mp4"
+        fast = calculate_sha256(out)
+        with bv.open(out) as container:
+            assert isinstance(container.streams[0], bv.VideoStream)
+            assert isinstance(container.streams[1], bv.AudioStream)
 
-        with av.open(out) as container:
-            assert container.streams[0].type == "video"
-            assert container.streams[1].type == "audio"
+        out = self.main([file], ["--no-faststart"]) + ".mp4"
+        nofast = calculate_sha256(out)
+        with bv.open(out) as container:
+            assert isinstance(container.streams[0], bv.VideoStream)
+            assert isinstance(container.streams[1], bv.AudioStream)
 
-        cn = fileinfo(out)
-        video = cn.videos[0]
+        out = self.main([file], ["--fragmented"]) + ".mp4"
+        frag = calculate_sha256(out)
+        with bv.open(out) as container:
+            assert isinstance(container.streams[0], bv.VideoStream)
+            assert isinstance(container.streams[1], bv.AudioStream)
 
-        assert video.fps == 30
-        # assert video.time_base == Fraction(1, 30)
-        assert video.width == 1280
-        assert video.height == 720
-        assert video.codec == "h264"
-        assert video.lang == "eng"
-        assert cn.audios[0].codec == "aac"
-        assert cn.audios[0].samplerate == 48000
-        assert cn.audios[0].lang == "eng"
+        assert fast != nofast, "+faststart is not being applied"
+        assert frag not in (fast, nofast), "fragmented output should diff."
 
-        return out
+    def test_example(self) -> None:
+        out = self.main(["example.mp4"], [], output="example_ALTERED.mp4")
+        with bv.open(out) as container:
+            assert container.duration is not None
+            assert container.duration > 17300000 and container.duration < 2 << 24
+
+            assert len(container.streams) == 2
+            video = container.streams[0]
+            audio = container.streams[1]
+            assert isinstance(video, bv.VideoStream)
+            assert isinstance(audio, bv.AudioStream)
+            assert video.base_rate == 30
+            assert video.average_rate is not None
+            assert video.average_rate == 30, video.average_rate
+            assert (video.width, video.height) == (1280, 720)
+            assert video.codec.name == "h264"
+            assert video.language == "eng"
+            assert audio.codec.name == "aac"
+            assert audio.sample_rate == 48000
+            assert audio.language == "eng"
+            assert audio.layout.name == "stereo"
+
+    def test_to_mono(self) -> None:
+        out = self.main(["example.mp4"], ["-layout", "mono"], output="example_mono.mp4")
+        with bv.open(out) as container:
+            assert container.duration is not None
+            assert container.duration > 17300000 and container.duration < 2 << 24
+
+            assert len(container.streams) == 2
+            video = container.streams[0]
+            audio = container.streams[1]
+            assert isinstance(video, bv.VideoStream)
+            assert isinstance(audio, bv.AudioStream)
+            assert video.base_rate == 30
+            assert video.average_rate is not None
+            assert video.average_rate == 30, video.average_rate
+            assert (video.width, video.height) == (1280, 720)
+            assert video.codec.name == "h264"
+            assert video.language == "eng"
+            assert audio.codec.name == "aac"
+            assert audio.sample_rate == 48000
+            assert audio.language == "eng"
+            assert audio.layout.name == "mono"
 
     # PR #260
-    def high_speed_test():
-        return run.check(["example.mp4", "--video-speed", "99998"], "empty")
+    def test_high_speed(self):
+        self.check(["example.mp4", "--video-speed", "99998"], "empty")
 
     # Issue #184
-    def units():
-        run.main(["example.mp4"], ["--edit", "all/e", "--set-speed", "125%,-30,end"])
-        return run.main(["example.mp4"], ["--edit", "audio:threshold=4%"])
+    def test_units(self):
+        self.main(["example.mp4"], ["--edit", "all/e", "--set-speed", "125%,-30,end"])
+        self.main(["example.mp4"], ["--edit", "audio:threshold=4%"])
 
-    def sr_units():
-        run.main(["example.mp4"], ["--sample_rate", "44100 Hz"])
-        return run.main(["example.mp4"], ["--sample_rate", "44.1 kHz"])
+    def test_sr_units(self):
+        self.main(["example.mp4"], ["--sample_rate", "44100 Hz"])
+        self.main(["example.mp4"], ["--sample_rate", "44.1 kHz"])
 
-    def video_speed():
-        return run.main(["example.mp4"], ["--video-speed", "1.5"])
+    def test_video_speed(self):
+        self.main(["example.mp4"], ["--video-speed", "1.5"])
 
-    def backwards_range():
+    def test_backwards_range(self):
         """
         Cut out the last 5 seconds of a media file by using negative number in the
         range.
         """
-        run.main(["example.mp4"], ["--edit", "none", "--cut_out", "-5secs,end"])
-        return run.main(["example.mp4"], ["--edit", "all/e", "--add_in", "-5secs,end"])
+        self.main(["example.mp4"], ["--edit", "none", "--cut_out", "-5secs,end"])
+        self.main(["example.mp4"], ["--edit", "all/e", "--add_in", "-5secs,end"])
 
-    def cut_out():
-        run.main(
+    def test_cut_out(self):
+        self.main(
             ["example.mp4"],
             [
                 "--edit",
@@ -294,112 +262,104 @@ def main(sys_args: list[str] | None = None):
                 "2secs,10secs",
             ],
         )
-        return run.main(
+        self.main(
             ["example.mp4"],
             ["--edit", "all/e", "--video_speed", "2", "--add_in", "2secs,10secs"],
         )
 
-    def gif():
+    def test_gif(self):
         """
         Feed auto-editor a gif file and make sure it can spit out a correctly formatted
         gif. No editing is requested.
         """
-        out = run.main(
-            ["resources/only-video/man-on-green-screen.gif"], ["--edit", "none"]
-        )
+        input = ["resources/only-video/man-on-green-screen.gif"]
+        out = self.main(input, ["--edit", "none", "--cut-out", "2sec,end"], "out.gif")
         assert fileinfo(out).videos[0].codec == "gif"
 
-        return out
+    def test_margin(self):
+        self.main(["example.mp4"], ["-m", "3"])
+        self.main(["example.mp4"], ["-m", "0.3sec"])
+        self.main(["example.mp4"], ["-m", "0.1 seconds"])
+        self.main(["example.mp4"], ["-m", "6,-3secs"])
 
-    def margin_tests():
-        run.main(["example.mp4"], ["-m", "3"])
-        run.main(["example.mp4"], ["--margin", "3"])
-        run.main(["example.mp4"], ["-m", "0.3sec"])
-        run.main(["example.mp4"], ["-m", "6,-3secs"])
-        return run.main(["example.mp4"], ["-m", "0.4 seconds", "--stats"])
-
-    def input_extension():
+    def test_input_extension(self):
         """Input file must have an extension. Throw error if none is given."""
+        path = os.path.join(self.temp_dir, "example")
+        shutil.copy("example.mp4", path)
+        self.check([path, "--no-open"], "must have an extension")
 
-        shutil.copy("example.mp4", "example")
-        run.check(["example", "--no-open"], "must have an extension")
+    def test_silent_threshold(self):
+        with bv.open("resources/new-commentary.mp3") as container:
+            assert container.duration is not None
+            assert container.duration / bv.time_base == 6.732
 
-        return "example"
-
-    def output_extension():
-        # Add input extension to output name if no output extension is given.
-        out = run.main(inputs=["example.mp4"], cmd=[], output="out")
-
-        assert out == "out.mp4"
-        assert fileinfo(out).videos[0].codec == "h264"
-
-        out = run.main(inputs=["resources/testsrc.mkv"], cmd=[], output="out")
-        assert out == "out.mkv"
-        assert fileinfo(out).videos[0].codec == "h264"
-
-        return "out.mp4", "out.mkv"
-
-    def progress():
-        run.main(["example.mp4"], ["--progress", "machine"])
-        run.main(["example.mp4"], ["--progress", "none"])
-        return run.main(["example.mp4"], ["--progress", "ascii"])
-
-    def silent_threshold():
-        return run.main(
+        out = self.main(
             ["resources/new-commentary.mp3"], ["--edit", "audio:threshold=0.1"]
         )
+        out += ".mp3"
 
-    def track_tests():
-        out = run.main(["resources/multi-track.mov"], ["--keep_tracks_seperate"])
+        with bv.open(out) as container:
+            assert container.duration is not None
+            assert container.duration / bv.time_base == 6.552
+
+    def test_track(self):
+        out = self.main(["resources/multi-track.mov"], []) + ".mov"
         assert len(fileinfo(out).audios) == 2
 
-        return out
+    def test_export_json(self):
+        out = self.main(["example.mp4"], ["--export_as_json"], "c77130d763d40e8.json")
+        self.main([out], [])
 
-    def export_json_tests():
-        out = run.main(["example.mp4"], ["--export_as_json"])
-        out2 = run.main([out], [])
-        return out, out2
-
-    def import_v1_tests():
-        with open("v1.json", "w") as file:
+    def test_import_v1(self):
+        path = os.path.join(self.temp_dir, "v1.json")
+        with open(path, "w") as file:
             file.write(
                 """{"version": "1", "source": "example.mp4", "chunks": [ [0, 26, 1.0], [26, 34, 0] ]}"""
             )
 
-        return "v1.json", run.main(["v1.json"], [])
+        self.main([path], [])
 
-    def premiere_named_export():
-        run.main(["example.mp4"], ["--export", 'premiere:name="Foo Bar"'])
+    def test_res_with_v1(self):
+        v1 = self.main(["example.mp4"], ["--export", "json"], "input.json")
+        out = self.main([v1], ["-res", "720,720"], "output.mp4")
 
-    def export_subtitles():
-        # cn = fileinfo(run.main(["resources/mov_text.mp4"], []))
+        output = fileinfo(out)
+        assert output.videos[0].width == 720
+        assert output.videos[0].height == 720
+        assert len(output.audios) == 1
+
+    def test_premiere_named_export(self) -> None:
+        self.main(["example.mp4"], ["--export", 'premiere:name="Foo Bar"'])
+
+    def test_export_subtitles(self) -> None:
+        # cn = fileinfo(self.main(["resources/mov_text.mp4"], [], "movtext_out.mp4"))
 
         # assert len(cn.videos) == 1
         # assert len(cn.audios) == 1
         # assert len(cn.subtitles) == 1
 
-        cn = fileinfo(run.main(["resources/webvtt.mkv"], []))
-
+        cn = fileinfo(self.main(["resources/webvtt.mkv"], [], "webvtt_out.mkv"))
         assert len(cn.videos) == 1
         assert len(cn.audios) == 1
         assert len(cn.subtitles) == 1
 
-    def resolution_and_scale():
-        cn = fileinfo(run.main(["example.mp4"], ["--scale", "1.5"]))
-
+    def test_scale(self) -> None:
+        cn = fileinfo(self.main(["example.mp4"], ["--scale", "1.5"], "scale.mp4"))
         assert cn.videos[0].fps == 30
         assert cn.videos[0].width == 1920
         assert cn.videos[0].height == 1080
         assert cn.audios[0].samplerate == 48000
 
-        cn = fileinfo(run.main(["example.mp4"], ["--scale", "0.2"]))
-
+        cn = fileinfo(self.main(["example.mp4"], ["--scale", "0.2"], "scale.mp4"))
         assert cn.videos[0].fps == 30
         assert cn.videos[0].width == 256
         assert cn.videos[0].height == 144
         assert cn.audios[0].samplerate == 48000
 
-        out = run.main(["example.mp4"], ["-res", "700,380", "-b", "darkgreen"])
+    def test_resolution(self):
+        out = self.main(
+            ["example.mp4"], ["-res", "700,380", "-b", "darkgreen"], "green"
+        )
         cn = fileinfo(out)
 
         assert cn.videos[0].fps == 30
@@ -407,182 +367,178 @@ def main(sys_args: list[str] | None = None):
         assert cn.videos[0].height == 380
         assert cn.audios[0].samplerate == 48000
 
-        return out
+    # def test_premiere_multi(self):
+    #     p_xml = self.main([f"resources/multi-track.mov"], ["-exp"], "multi.xml")
 
-    def premiere():
-        results = set()
+    #     cn = fileinfo(self.main([p_xml], []))
+    #     assert len(cn.videos) == 1
+    #     assert len(cn.audios) == 2
+
+    def test_premiere(self) -> None:
+        for test_name in all_files:
+            if test_name == "multi-track.mov":
+                continue
+
+            p_xml = self.main([f"resources/{test_name}"], ["-exp"], "out.xml")
+            self.main([p_xml], [])
+
+    def test_export(self):
         for test_name in all_files:
             test_file = f"resources/{test_name}"
-            p_xml = run.main([test_file], ["-exp"])
-            results.add(p_xml)
-            results.add(run.main([p_xml], []))
+            self.main([test_file], ["--export", "final-cut-pro:version=10"])
+            self.main([test_file], ["--export", "final-cut-pro:version=11"])
+            self.main([test_file], ["-exs"])
+            self.main([test_file], ["--stats"])
 
-        return tuple(results)
-
-    def export():
-        results = set()
-
+    def test_clip_sequence(self) -> None:
         for test_name in all_files:
             test_file = f"resources/{test_name}"
-            results.add(run.main([test_file], []))
-            run.main([test_file], ["--edit", "none"])
-            results.add(run.main([test_file], ["--export", "final-cut-pro:version=10"]))
-            results.add(run.main([test_file], ["--export", "final-cut-pro:version=11"]))
-            results.add(run.main([test_file], ["-exs"]))
-            results.add(run.main([test_file], ["--export_as_clip_sequence"]))
-            run.main([test_file], ["--stats"])
+            self.main([test_file], ["--export_as_clip_sequence"])
 
-        return tuple(results)
-
-    def codec_tests():
-        run.main(["example.mp4"], ["--video_codec", "h264"])
-        return run.main(["example.mp4"], ["--audio_codec", "ac3"])
+    def test_codecs(self) -> None:
+        self.main(["example.mp4"], ["--video_codec", "h264"])
+        self.main(["example.mp4"], ["--audio_codec", "ac3"])
 
     # Issue #241
-    def multi_track_edit():
-        out = run.main(
+    def test_multi_track_edit(self):
+        out = self.main(
             ["example.mp4", "resources/multi-track.mov"],
             ["--edit", "audio:stream=1"],
-            "out.mov",
-        )
-        assert len(fileinfo(out).audios) == 1
-
-        return out
-
-    def concat():
-        out = run.main(["example.mp4"], ["--cut-out", "0,171"], "hmm.mp4")
-        out2 = run.main(["example.mp4", "hmm.mp4"], ["--debug"])
-        return out, out2
-
-    def concat_mux_tracks():
-        out = run.main(["example.mp4", "resources/multi-track.mov"], [], "out.mov")
-        assert len(fileinfo(out).audios) == 1
-
-        return out
-
-    def concat_multiple_tracks():
-        out = run.main(
-            ["resources/multi-track.mov", "resources/multi-track.mov"],
-            ["--keep-tracks-separate"],
-            "out.mov",
-        )
-        assert len(fileinfo(out).audios) == 2
-        out = run.main(
-            ["example.mp4", "resources/multi-track.mov"],
-            ["--keep-tracks-separate"],
-            "out.mov",
+            "multi-track_ALTERED.mov",
         )
         assert len(fileinfo(out).audios) == 2
 
-        return out
+    def test_concat(self):
+        out = self.main(["example.mp4"], ["--cut-out", "0,171"], "hmm.mp4")
+        self.main(["example.mp4", out], ["--debug"])
 
-    def frame_rate():
-        cn = fileinfo(run.main(["example.mp4"], ["-r", "15", "--no-seek"]))
+    def test_concat_mux_tracks(self):
+        inputs = ["example.mp4", "resources/multi-track.mov"]
+        out = self.main(inputs, ["--mix-audio-streams"], "concat_mux.mov")
+        assert len(fileinfo(out).audios) == 1
+
+    def test_concat_multi_tracks(self):
+        out = self.main(
+            ["resources/multi-track.mov", "resources/multi-track.mov"], [], "out.mov"
+        )
+        assert len(fileinfo(out).audios) == 2
+        inputs = ["example.mp4", "resources/multi-track.mov"]
+        out = self.main(inputs, [], "out.mov")
+        assert len(fileinfo(out).audios) == 2
+
+    def test_frame_rate(self):
+        cn = fileinfo(self.main(["example.mp4"], ["-r", "15", "--no-seek"], "fr.mp4"))
         video = cn.videos[0]
         assert video.fps == 15, video.fps
         assert video.duration - 17.33333333333333333333333 < 3, video.duration
 
-        cn = fileinfo(run.main(["example.mp4"], ["-r", "20"]))
+        cn = fileinfo(self.main(["example.mp4"], ["-r", "20"], "fr.mp4"))
         video = cn.videos[0]
         assert video.fps == 20, video.fps
         assert video.duration - 17.33333333333333333333333 < 2
 
-        cn = fileinfo(out := run.main(["example.mp4"], ["-r", "60"]))
+    def test_frame_rate_60(self):
+        cn = fileinfo(self.main(["example.mp4"], ["-r", "60"], "fr60.mp4"))
         video = cn.videos[0]
 
         assert video.fps == 60, video.fps
         assert video.duration - 17.33333333333333333333333 < 0.3
 
-        return out
-
-    # def embedded_image():
-    #     out1 = run.main(["resources/embedded-image/h264-png.mp4"], [])
+    # def embedded_image(self):
+    #     out1 = self.main(["resources/embedded-image/h264-png.mp4"], [])
     #     cn = fileinfo(out1)
     #     assert cn.videos[0].codec == "h264"
     #     assert cn.videos[1].codec == "png"
 
-    #     out2 = run.main(["resources/embedded-image/h264-mjpeg.mp4"], [])
+    #     out2 = self.main(["resources/embedded-image/h264-mjpeg.mp4"], [])
     #     cn = fileinfo(out2)
     #     assert cn.videos[0].codec == "h264"
     #     assert cn.videos[1].codec == "mjpeg"
 
-    #     out3 = run.main(["resources/embedded-image/h264-png.mkv"], [])
+    #     out3 = self.main(["resources/embedded-image/h264-png.mkv"], [])
     #     cn = fileinfo(out3)
     #     assert cn.videos[0].codec == "h264"
     #     assert cn.videos[1].codec == "png"
 
-    #     out4 = run.main(["resources/embedded-image/h264-mjpeg.mkv"], [])
+    #     out4 = self.main(["resources/embedded-image/h264-mjpeg.mkv"], [])
     #     cn = fileinfo(out4)
     #     assert cn.videos[0].codec == "h264"
     #     assert cn.videos[1].codec == "mjpeg"
 
-    #     return out1, out2, out3, out4
-
-    def motion():
-        out = run.main(
+    def test_motion(self):
+        self.main(
             ["resources/only-video/man-on-green-screen.mp4"],
             ["--edit", "motion", "--margin", "0"],
         )
-        out2 = run.main(
+        self.main(
             ["resources/only-video/man-on-green-screen.mp4"],
             ["--edit", "motion:threshold=0,width=200"],
         )
-        return out, out2
 
-    def edit_positive_tests():
-        run.main(["resources/multi-track.mov"], ["--edit", "audio:stream=all"])
-        run.main(["resources/multi-track.mov"], ["--edit", "not audio:stream=all"])
-        run.main(
+    def test_edit_positive(self):
+        self.main(["resources/multi-track.mov"], ["--edit", "audio:stream=all"])
+        self.main(["resources/multi-track.mov"], ["--edit", "not audio:stream=all"])
+        self.main(
             ["resources/multi-track.mov"],
             ["--edit", "(or (not audio:threshold=4%) audio:stream=1)"],
         )
-        out = run.main(
+        self.main(
             ["resources/multi-track.mov"],
             ["--edit", "(or (not audio:threshold=4%) (not audio:stream=1))"],
         )
-        return out
 
-    def edit_negative_tests():
-        run.check(
+    def test_edit_negative(self):
+        self.check(
             ["resources/wav/example-cut-s16le.wav", "--edit", "motion"],
-            "video stream '0' does not ",
+            "video stream",
         )
-        run.check(
+        self.check(
             ["resources/only-video/man-on-green-screen.gif", "--edit", "audio"],
-            "audio stream '0' does not ",
+            "audio stream",
         )
 
-    def yuv442p():
-        return run.main(["resources/test_yuv422p.mp4"], [])
+    def test_yuv442p(self):
+        self.main(["resources/test_yuv422p.mp4"], [])
 
-    def prores():
-        run.main(["resources/testsrc.mp4", "-c:v", "prores", "-o", "out.mkv"], [])
-        assert fileinfo("out.mkv").videos[0].pix_fmt == "yuv422p10le"
+    def test_prores(self):
+        out = self.main(["resources/testsrc.mp4"], ["-c:v", "prores"], "prores.mkv")
+        assert fileinfo(out).videos[0].pix_fmt == "yuv422p10le"
 
-        run.main(["out.mkv", "-c:v", "prores", "-o", "out2.mkv"], [])
-        assert fileinfo("out2.mkv").videos[0].pix_fmt == "yuv422p10le"
+        out2 = self.main([out], ["-c:v", "prores"], "prores2.mkv")
+        assert fileinfo(out2).videos[0].pix_fmt == "yuv422p10le"
 
-        return "out.mkv", "out2.mkv"
+    def test_decode_hevc(self):
+        out = self.main(["resources/testsrc-hevc.mp4"], ["-c:v", "h264"]) + ".mp4"
+        output = fileinfo(out)
+        assert output.videos[0].codec == "h264"
+        assert output.videos[0].pix_fmt == "yuv420p"
+
+    def test_encode_hevc(self):
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            raise SkipTest()
+
+        out = self.main(["resources/testsrc.mp4"], ["-c:v", "hevc"], "out.mkv")
+        output = fileinfo(out)
+        assert output.videos[0].codec == "hevc"
+        assert output.videos[0].pix_fmt == "yuv420p"
 
     #  Issue 280
-    def SAR():
-        out = run.main(["resources/SAR-2by3.mp4"], [])
+    def test_SAR(self) -> None:
+        out = self.main(["resources/SAR-2by3.mp4"], [], "2by3_out.mp4")
         assert fileinfo(out).videos[0].sar == Fraction(2, 3)
 
-        return out
+    def test_audio_norm_f(self) -> None:
+        self.main(["example.mp4"], ["--audio-normalize", "#f"])
 
-    def audio_norm_f():
-        return run.main(["example.mp4"], ["--audio-normalize", "#f"])
-
-    def audio_norm_ebu():
-        return run.main(
+    def test_audio_norm_ebu(self) -> None:
+        self.main(
             ["example.mp4"], ["--audio-normalize", "ebu:i=-5,lra=20,gain=5,tp=-1"]
         )
 
-    def palet_python_bridge():
+    def palet_python_bridge(self):
         env.update(make_standard_env())
 
-        def cases(*cases: tuple[str, Any]) -> None:
+        def cases(*cases: tuple[str, object]) -> None:
             for text, expected in cases:
                 try:
                     parser = Parser(Lexer("repl", text))
@@ -591,11 +547,14 @@ def main(sys_args: list[str] | None = None):
                 except MyError as e:
                     raise ValueError(f"{text}\nMyError: {e}")
 
+                result_val = results[-1]
                 if isinstance(expected, np.ndarray):
-                    if not np.array_equal(expected, results[-1]):
+                    if not isinstance(result_val, np.ndarray):
+                        raise ValueError(f"{text}: Result is not an ndarray")
+                    if not np.array_equal(expected, result_val):
                         raise ValueError(f"{text}: Numpy arrays don't match")
-                elif expected != results[-1]:
-                    raise ValueError(f"{text}: Expected: {expected}, got {results[-1]}")
+                elif expected != result_val:
+                    raise ValueError(f"{text}: Expected: {expected}, got {result_val}")
 
         cases(
             ("345", 345),
@@ -730,65 +689,118 @@ def main(sys_args: list[str] | None = None):
             ('#(#("sym" "symbol?") "bool?")', [["sym", "symbol?"], "bool?"]),
         )
 
-    def palet_scripts():
-        run.raw(["palet", "resources/scripts/scope.pal"])
-        run.raw(["palet", "resources/scripts/maxcut.pal"])
-        run.raw(["palet", "resources/scripts/case.pal"])
-        run.raw(["palet", "resources/scripts/testmath.pal"])
+    def palet_scripts(self) -> None:
+        self.raw(["palet", "resources/scripts/scope.pal"])
+        self.raw(["palet", "resources/scripts/maxcut.pal"])
+        self.raw(["palet", "resources/scripts/case.pal"])
+        self.raw(["palet", "resources/scripts/testmath.pal"])
 
+
+def run_tests(runner: Runner, tests: list[Callable], args: TestArgs) -> None:
+    if args.only != []:
+        tests = list(filter(lambda t: t.__name__ in args.only, tests))
+
+    total_time = 0.0
+    real_time = perf_counter()
+    passed = 0
+    total = len(tests)
+
+    def timed_test(test_func):
+        start_time = perf_counter()
+        skipped = False
+        try:
+            test_func()
+            success = True
+        except SkipTest:
+            skipped = True
+        except Exception as e:
+            success = False
+            exception = e
+        end_time = perf_counter()
+        duration = end_time - start_time
+
+        if skipped:
+            return (SkipTest, duration, None)
+        elif success:
+            return (True, duration, None)
+        else:
+            return (False, duration, exception)
+
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        future_to_data = {}
+        for test in tests:
+            future = executor.submit(timed_test, test)
+            future_to_data[future] = test
+
+        index = 0
+        for future in concurrent.futures.as_completed(future_to_data):
+            test = future_to_data[future]
+            name = test.__name__
+            success, dur, exception = future.result()
+            total_time += dur
+            index += 1
+
+            msg = f"{name:<26} ({index}/{total})  {round(dur, 2):<5} secs  "
+            if success == SkipTest:
+                passed += 1
+                print(f"{msg}[\033[38;2;125;125;125;mSKIPPED\033[0m]", flush=True)
+            elif success:
+                passed += 1
+                print(f"{msg}[\033[1;32mPASSED\033[0m]", flush=True)
+            else:
+                print(f"{msg}\033[1;31m[FAILED]\033[0m", flush=True)
+                if args.no_fail_fast:
+                    print(f"\n{exception}")
+                else:
+                    print("")
+                    raise exception
+
+    real_time = round(perf_counter() - real_time, 2)
+    total_time = round(total_time, 2)
+    print(
+        f"\nCompleted  {passed}/{total}\nreal time: {real_time} secs   total: {total_time} secs"
+    )
+
+
+def main(sys_args: list[str] | None = None) -> None:
+    if sys_args is None:
+        sys_args = sys.argv[1:]
+
+    args = test_options(ArgumentParser("test")).parse_args(TestArgs, sys_args)
+    run = Runner()
     tests = []
 
+    test_methods = {
+        name: getattr(run, name)
+        for name in dir(Runner)
+        if callable(getattr(Runner, name)) and name not in ["main", "raw", "check"]
+    }
+
     if args.category in {"palet", "all"}:
-        tests.extend([palet_python_bridge, palet_scripts])
+        tests.extend(
+            [test_methods[name] for name in ["palet_python_bridge", "palet_scripts"]]
+        )
 
     if args.category in {"sub", "all"}:
-        tests.extend([info, levels, subdump, desc])
+        tests.extend(
+            [test_methods[name] for name in ["info", "levels", "subdump", "desc"]]
+        )
 
     if args.category in {"cli", "all"}:
         tests.extend(
             [
-                premiere,
-                SAR,
-                yuv442p,
-                prores,
-                edit_negative_tests,
-                edit_positive_tests,
-                audio_norm_f,
-                audio_norm_ebu,
-                export_json_tests,
-                import_v1_tests,
-                high_speed_test,
-                video_speed,
-                multi_track_edit,
-                concat_mux_tracks,
-                concat_multiple_tracks,
-                frame_rate,
-                help_tests,
-                version_test,
-                parser_test,
-                concat,
-                example,
-                units,
-                sr_units,
-                backwards_range,
-                cut_out,
-                gif,
-                margin_tests,
-                input_extension,
-                output_extension,
-                progress,
-                silent_threshold,
-                track_tests,
-                codec_tests,
-                premiere_named_export,
-                export_subtitles,
-                export,
-                motion,
-                resolution_and_scale,
+                getattr(run, name)
+                for name in dir(Runner)
+                if callable(getattr(Runner, name)) and name.startswith("test_")
             ]
         )
-
-    run_tests(tests, args)
+    try:
+        run_tests(run, tests, args)
+    except KeyboardInterrupt:
+        print("Testing Interrupted by User.")
+        shutil.rmtree(run.temp_dir)
+        sys.exit(1)
+    shutil.rmtree(run.temp_dir)
 
 
 if __name__ == "__main__":

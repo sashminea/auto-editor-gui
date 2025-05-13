@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-import av
+import bv
 
 from auto_editor.utils.func import to_timecode
 
@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from auto_editor.utils.chunks import Chunks
     from auto_editor.utils.log import Log
 
-    Input = av.container.InputContainer
+    Input = bv.container.InputContainer
 
 
 @dataclass(slots=True)
@@ -138,18 +138,14 @@ def make_srt(input_: Input, stream: int) -> str:
         if packet.dts is None or packet.pts is None or packet.duration is None:
             continue
 
-        start = packet.pts * input_stream.time_base
-        end = start + packet.duration * input_stream.time_base
+        start_num = packet.pts * input_stream.time_base
+        start = to_timecode(start_num, "srt")
+        end = to_timecode(start_num + packet.duration * input_stream.time_base, "srt")
 
-        for subset in packet.decode():
-            start_time = to_timecode(start, "srt")
-            end_time = to_timecode(end, "srt")
+        for sub in packet.decode():
+            assert isinstance(sub, bv.subtitles.subtitle.AssSubtitle)
 
-            sub = subset[0]
-            assert len(subset) == 1
-            assert isinstance(sub, av.subtitles.subtitle.AssSubtitle)
-
-            output_bytes.write(f"{s}\n{start_time} --> {end_time}\n")
+            output_bytes.write(f"{s}\n{start} --> {end}\n")
             output_bytes.write(sub.dialogue.decode("utf-8", errors="ignore") + "\n\n")
             s += 1
 
@@ -159,7 +155,7 @@ def make_srt(input_: Input, stream: int) -> str:
 
 def _ensure(input_: Input, format: str, stream: int) -> str:
     output_bytes = io.BytesIO()
-    output = av.open(output_bytes, "w", format=format)
+    output = bv.open(output_bytes, "w", format=format)
 
     in_stream = input_.streams.subtitles[stream]
     out_stream = output.add_stream_from_template(in_stream)
@@ -179,7 +175,7 @@ def make_new_subtitles(tl: v3, log: Log) -> list[str]:
     if tl.v1 is None:
         return []
 
-    input_ = av.open(tl.v1.source.path)
+    input_ = bv.open(tl.v1.source.path)
     new_paths = []
 
     for s, sub in enumerate(tl.v1.source.subtitles):

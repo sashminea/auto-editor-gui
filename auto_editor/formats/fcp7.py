@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import xml.etree.ElementTree as ET
 from fractions import Fraction
-from io import StringIO
 from math import ceil
 from typing import TYPE_CHECKING
 from xml.etree.ElementTree import Element
 
-from auto_editor.ffwrapper import FileInfo, initFileInfo
-from auto_editor.timeline import ASpace, TlAudio, TlVideo, VSpace, v3
+from auto_editor.ffwrapper import FileInfo
+from auto_editor.timeline import ASpace, Template, TlAudio, TlVideo, VSpace, v3
 
 from .utils import Validator, show
 
@@ -29,59 +28,20 @@ DEPTH = "16"
 
 
 def uri_to_path(uri: str) -> str:
-    def de_norm(s: str) -> str:
-        uri_escape = {
-            "3C": "<",
-            "3E": ">",
-            "23": "#",
-            "25": "%",
-            "2B": "+",
-            "7B": "{",
-            "7D": "}",
-            "7C": "|",
-            "5C": "\\",
-            "5E": "^",
-            "7E": "~",
-            "5B": "[",
-            "5D": "]",
-            "60": "`",
-            "3F": "?",
-            "3A": ":",
-            "40": "@",
-            "3D": "=",
-            "2A": "*",
-            "29": ")",
-            "28": "(",
-            "27": "'",
-            "26": "&",
-            "24": "$",
-            "22": '"',
-            "21": "!",
-            "20": " ",
-        }
-        buf = StringIO()
-        i = 0
-        while i < len(s):
-            if s[i] == "%" and len(s) > i + 3:
-                tag = s[i + 1 : i + 3]
-                if tag in uri_escape:
-                    buf.write(uri_escape[tag])
-                    i += 3
-                else:
-                    buf.write(s[i])
-                    i += 1
-            else:
-                buf.write(s[i])
-                i += 1
-        return buf.getvalue()
+    urllib = __import__("urllib.parse", fromlist=["parse"])
 
     if uri.startswith("file://localhost/"):
-        return de_norm(uri[16:])
-    if uri.startswith("file://"):
-        if uri[9] == ":":  # Handle Windows-style paths
-            return de_norm(uri[8:])
-        return de_norm(uri[7:])
-    return uri
+        uri = uri[16:]
+    elif uri.startswith("file://"):
+        # Windows-style paths
+        if len(uri) > 8 and uri[9] == ":":
+            uri = uri[8:]
+        else:
+            uri = uri[7:]
+    else:
+        return uri
+
+    return urllib.parse.unquote(uri)
 
     # /Users/wyattblue/projects/auto-editor/example.mp4
     # file:///Users/wyattblue/projects/auto-editor/example.mp4
@@ -282,7 +242,7 @@ def fcp7_read_xml(path: str, log: Log) -> v3:
                     fileobj = valid.parse(clipitem["file"], {"pathurl": str})
 
                     if "pathurl" in fileobj:
-                        sources[file_id] = initFileInfo(
+                        sources[file_id] = FileInfo.init(
                             uri_to_path(fileobj["pathurl"]),
                             log,
                         )
@@ -317,7 +277,7 @@ def fcp7_read_xml(path: str, log: Log) -> v3:
                 file_id = clipitem["file"].attrib["id"]
                 if file_id not in sources:
                     fileobj = valid.parse(clipitem["file"], {"pathurl": str})
-                    sources[file_id] = initFileInfo(
+                    sources[file_id] = FileInfo.init(
                         uri_to_path(fileobj["pathurl"]), log
                     )
 
@@ -336,10 +296,8 @@ def fcp7_read_xml(path: str, log: Log) -> v3:
                     )
                 )
 
-    primary_src = sources[next(iter(sources))]
-    assert type(primary_src) is FileInfo
-
-    return v3(primary_src, tb, sr, res, "#000", vobjs, aobjs, v1=None)
+    T = Template.init(sources[next(iter(sources))], sr, res=res)
+    return v3(tb, "#000", T, vobjs, aobjs, v1=None)
 
 
 def media_def(
@@ -424,13 +382,14 @@ def resolve_write_audio(audio: Element, make_filedef, tl: v3) -> None:
                 clipitem.append(speedup(aclip.speed * 100))
 
 
-def premiere_write_audio(audio: Element, make_filedef, src: FileInfo, tl: v3) -> None:
+def premiere_write_audio(audio: Element, make_filedef, tl: v3) -> None:
     ET.SubElement(audio, "numOutputChannels").text = "2"
     aformat = ET.SubElement(audio, "format")
     aschar = ET.SubElement(aformat, "samplecharacteristics")
     ET.SubElement(aschar, "depth").text = DEPTH
     ET.SubElement(aschar, "samplerate").text = f"{tl.sr}"
 
+    has_video = tl.v and tl.v[0]
     t = 0
     for aclips in tl.a:
         for channelcount in range(0, 2):  # Because "stereo" is hardcoded.
@@ -442,7 +401,7 @@ def premiere_write_audio(audio: Element, make_filedef, src: FileInfo, tl: v3) ->
                 premiereTrackType="Stereo",
             )
 
-            if src.videos:
+            if has_video:
                 ET.SubElement(track, "outputchannelindex").text = f"{channelcount + 1}"
 
             for j, aclip in enumerate(aclips):
@@ -453,7 +412,7 @@ def premiere_write_audio(audio: Element, make_filedef, src: FileInfo, tl: v3) ->
                 _in = f"{aclip.offset}"
                 _out = f"{aclip.offset + aclip.dur}"
 
-                if not src.videos:
+                if not has_video:
                     clip_item_num = j + 1
                 else:
                     clip_item_num = len(aclips) + 1 + j + (t * len(aclips))
@@ -579,7 +538,7 @@ def fcp7_write_xml(name: str, output: str, resolve: bool, tl: v3) -> None:
     if resolve:
         resolve_write_audio(audio, make_filedef, tl)
     else:
-        premiere_write_audio(audio, make_filedef, src, tl)
+        premiere_write_audio(audio, make_filedef, tl)
 
     tree = ET.ElementTree(xmeml)
     ET.indent(tree, space="  ", level=0)

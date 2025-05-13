@@ -1,25 +1,31 @@
 from __future__ import annotations
 
-import io
+from fractions import Fraction
+from io import BytesIO
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-import av
+import bv
 import numpy as np
-from av.filter.loudnorm import stats
+from bv import AudioFrame
+from bv.filter.loudnorm import stats
 
 from auto_editor.ffwrapper import FileInfo
-from auto_editor.lang.json import Lexer, Parser
+from auto_editor.json import load
 from auto_editor.lang.palet import env
 from auto_editor.lib.contracts import andc, between_c, is_int_or_float
 from auto_editor.lib.err import MyError
-from auto_editor.output import Ensure
 from auto_editor.timeline import TlAudio, v3
-from auto_editor.utils.bar import Bar
 from auto_editor.utils.cmdkw import ParserError, parse_with_palet, pAttr, pAttrs
-from auto_editor.utils.container import Container
+from auto_editor.utils.func import parse_bitrate
 from auto_editor.utils.log import Log
-from auto_editor.utils.types import Args
-from auto_editor.wavfile import AudioData, read, write
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+    from typing import Any
+
+    from auto_editor.__main__ import Args
+
 
 norm_types = {
     "ebu": pAttrs(
@@ -58,12 +64,14 @@ def parse_norm(norm: str, log: Log) -> dict | None:
 
 def parse_ebu_bytes(norm: dict, stat: bytes, log: Log) -> tuple[str, str]:
     try:
-        parsed = Parser(Lexer("loudnorm", stat)).expr()
+        parsed = load("loudnorm", stat)
     except MyError:
         log.error(f"Invalid loudnorm stats.\n{stat!r}")
 
     for key in {"input_i", "input_tp", "input_lra", "input_thresh", "target_offset"}:
-        val = float(parsed[key])
+        val_ = parsed[key]
+        assert isinstance(val_, int | float | str | bytes)
+        val = float(val_)
         if val == float("-inf"):
             parsed[key] = -99
         elif val == float("inf"):
@@ -94,14 +102,14 @@ def apply_audio_normalization(
             f"i={norm['i']}:lra={norm['lra']}:tp={norm['tp']}:offset={norm['gain']}"
         )
         log.debug(f"audio norm first pass: {first_pass}")
-        with av.open(f"{pre_master}") as container:
+        with bv.open(f"{pre_master}") as container:
             stats_ = stats(first_pass, container.streams.audio[0])
 
         name, filter_args = parse_ebu_bytes(norm, stats_, log)
     else:
         assert "t" in norm
 
-        def get_peak_level(frame: av.AudioFrame) -> float:
+        def get_peak_level(frame: AudioFrame) -> float:
             # Calculate peak level in dB
             # Should be equivalent to: -af astats=measure_overall=Peak_level:measure_perchannel=0
             max_amplitude = np.abs(frame.to_ndarray()).max()
@@ -109,7 +117,7 @@ def apply_audio_normalization(
                 return -20.0 * np.log10(max_amplitude)
             return -99.0
 
-        with av.open(pre_master) as container:
+        with bv.open(pre_master) as container:
             max_peak_level = -99.0
             assert len(container.streams.video) == 0
             for frame in container.decode(audio=0):
@@ -121,13 +129,13 @@ def apply_audio_normalization(
         log.print(f"peak adjustment: {adjustment:.3f}dB")
         name, filter_args = "volume", f"{adjustment}"
 
-    with av.open(pre_master) as container:
+    with bv.open(pre_master) as container:
         input_stream = container.streams.audio[0]
 
-        output_file = av.open(path, mode="w")
+        output_file = bv.open(path, mode="w")
         output_stream = output_file.add_stream("pcm_s16le", rate=input_stream.rate)
 
-        graph = av.filter.Graph()
+        graph = bv.filter.Graph()
         graph.link_nodes(
             graph.add_abuffer(template=input_stream),
             graph.add(name, filter_args),
@@ -138,30 +146,37 @@ def apply_audio_normalization(
             while True:
                 try:
                     aframe = graph.pull()
-                    assert isinstance(aframe, av.AudioFrame)
+                    assert isinstance(aframe, AudioFrame)
                     output_file.mux(output_stream.encode(aframe))
-                except (av.BlockingIOError, av.EOFError):
+                except (bv.BlockingIOError, bv.EOFError):
                     break
 
         output_file.mux(output_stream.encode(None))
         output_file.close()
 
 
-def process_audio_clip(
-    clip: TlAudio, samp_list: AudioData, samp_start: int, samp_end: int, sr: int
-) -> AudioData:
-    input_buffer = io.BytesIO()
-    write(input_buffer, sr, samp_list[samp_start:samp_end])
+def process_audio_clip(clip: TlAudio, data: np.ndarray, sr: int) -> np.ndarray:
+    to_s16 = bv.AudioResampler(format="s16", layout="stereo", rate=sr)
+    input_buffer = BytesIO()
+
+    with bv.open(input_buffer, "w", format="wav") as container:
+        output_stream = container.add_stream(
+            "pcm_s16le", sample_rate=sr, format="s16", layout="stereo"
+        )
+
+        frame = AudioFrame.from_ndarray(data, format="s16p", layout="stereo")
+        frame.rate = sr
+
+        for reframe in to_s16.resample(frame):
+            container.mux(output_stream.encode(reframe))
+        container.mux(output_stream.encode(None))
+
     input_buffer.seek(0)
 
-    input_file = av.open(input_buffer, "r")
+    input_file = bv.open(input_buffer, "r")
     input_stream = input_file.streams.audio[0]
 
-    output_bytes = io.BytesIO()
-    output_file = av.open(output_bytes, mode="w", format="wav")
-    output_stream = output_file.add_stream("pcm_s16le", rate=sr)
-
-    graph = av.filter.Graph()
+    graph = bv.filter.Graph()
     args = [graph.add_abuffer(template=input_stream)]
 
     if clip.speed != 1:
@@ -186,29 +201,23 @@ def process_audio_clip(
     args.append(graph.add("abuffersink"))
     graph.link_nodes(*args).configure()
 
+    all_frames = []
+    resampler = bv.AudioResampler(format="s16p", layout="stereo", rate=sr)
+
     for frame in input_file.decode(input_stream):
         graph.push(frame)
         while True:
             try:
                 aframe = graph.pull()
-                assert isinstance(aframe, av.AudioFrame)
-                output_file.mux(output_stream.encode(aframe))
-            except (av.BlockingIOError, av.EOFError):
+                assert isinstance(aframe, AudioFrame)
+
+                for resampled_frame in resampler.resample(aframe):
+                    all_frames.append(resampled_frame.to_ndarray())
+
+            except (bv.BlockingIOError, bv.EOFError):
                 break
 
-    # Flush the stream
-    output_file.mux(output_stream.encode(None))
-
-    input_file.close()
-    output_file.close()
-
-    output_bytes.seek(0)
-    has_filesig = output_bytes.read(4)
-    output_bytes.seek(0)
-    if not has_filesig:  # Can rarely happen when clip is extremely small
-        return np.empty((0, 2), dtype=np.int16)
-
-    return read(output_bytes)[1]
+    return np.concatenate(all_frames, axis=1)
 
 
 def mix_audio_files(sr: int, audio_paths: list[str], output_path: str) -> None:
@@ -217,7 +226,7 @@ def mix_audio_files(sr: int, audio_paths: list[str], output_path: str) -> None:
 
     # First pass: determine the maximum length
     for path in audio_paths:
-        container = av.open(path)
+        container = bv.open(path)
         stream = container.streams.audio[0]
 
         # Calculate duration in samples
@@ -229,10 +238,10 @@ def mix_audio_files(sr: int, audio_paths: list[str], output_path: str) -> None:
 
     # Second pass: read and mix audio
     for path in audio_paths:
-        container = av.open(path)
+        container = bv.open(path)
         stream = container.streams.audio[0]
 
-        resampler = av.audio.resampler.AudioResampler(
+        resampler = bv.audio.resampler.AudioResampler(
             format="s16", layout="mono", rate=sr
         )
 
@@ -265,7 +274,7 @@ def mix_audio_files(sr: int, audio_paths: list[str], output_path: str) -> None:
         mixed_audio = mixed_audio * (32767 / max_val)
     mixed_audio = mixed_audio.astype(np.int16)  # type: ignore
 
-    output_container = av.open(output_path, mode="w")
+    output_container = bv.open(output_path, mode="w")
     output_stream = output_container.add_stream("pcm_s16le", rate=sr)
 
     chunk_size = sr  # Process 1 second at a time
@@ -273,7 +282,7 @@ def mix_audio_files(sr: int, audio_paths: list[str], output_path: str) -> None:
         # Shape becomes (1, samples) for mono
         chunk = np.array([mixed_audio[i : i + chunk_size]])
 
-        frame = av.AudioFrame.from_ndarray(chunk, format="s16", layout="mono")
+        frame = AudioFrame.from_ndarray(chunk, format="s16", layout="mono")
         frame.rate = sr
         frame.pts = i  # Set presentation timestamp
 
@@ -283,92 +292,223 @@ def mix_audio_files(sr: int, audio_paths: list[str], output_path: str) -> None:
     output_container.close()
 
 
+def file_to_ndarray(src: FileInfo, stream: int, sr: int) -> np.ndarray:
+    all_frames = []
+
+    resampler = bv.AudioResampler(format="s16p", layout="stereo", rate=sr)
+
+    with bv.open(src.path) as container:
+        for frame in container.decode(audio=stream):
+            for resampled_frame in resampler.resample(frame):
+                all_frames.append(resampled_frame.to_ndarray())
+
+    return np.concatenate(all_frames, axis=1)
+
+
+def ndarray_to_file(audio_data: np.ndarray, rate: int, out: str | Path) -> None:
+    layout = "stereo"
+
+    with bv.open(out, mode="w") as output:
+        stream = output.add_stream("pcm_s16le", rate=rate, format="s16", layout=layout)
+
+        frame = bv.AudioFrame.from_ndarray(audio_data, format="s16p", layout=layout)
+        frame.rate = rate
+
+        output.mux(stream.encode(frame))
+        output.mux(stream.encode(None))
+
+
+def ndarray_to_iter(
+    audio_data: np.ndarray, fmt: bv.AudioFormat, layout: str, rate: int
+) -> Iterator[AudioFrame]:
+    chunk_size = rate // 4  # Process 0.25 seconds at a time
+
+    resampler = bv.AudioResampler(rate=rate, format=fmt, layout=layout)
+    for i in range(0, audio_data.shape[1], chunk_size):
+        chunk = audio_data[:, i : i + chunk_size]
+
+        frame = AudioFrame.from_ndarray(chunk, format="s16p", layout="stereo")
+        frame.rate = rate
+        frame.pts = i
+
+        yield from resampler.resample(frame)
+
+
 def make_new_audio(
-    tl: v3, ctr: Container, ensure: Ensure, args: Args, bar: Bar, log: Log
-) -> list[str]:
+    output: bv.container.OutputContainer,
+    audio_format: bv.AudioFormat,
+    tl: v3,
+    args: Args,
+    log: Log,
+) -> tuple[list[bv.AudioStream], list[Iterator[AudioFrame]]]:
+    audio_inputs = []
+    audio_gen_frames = []
+    audio_streams: list[bv.AudioStream] = []
+    audio_paths = _make_new_audio(tl, audio_format, args, log)
+
+    for i, audio_path in enumerate(audio_paths):
+        audio_stream = output.add_stream(
+            args.audio_codec,
+            rate=tl.sr,
+            format=audio_format,
+            layout=tl.T.layout,
+            time_base=Fraction(1, tl.sr),
+        )
+        if not isinstance(audio_stream, bv.AudioStream):
+            log.error(f"Not a known audio codec: {args.audio_codec}")
+
+        if args.audio_bitrate != "auto":
+            audio_stream.bit_rate = parse_bitrate(args.audio_bitrate, log)
+            log.debug(f"audio bitrate: {audio_stream.bit_rate}")
+        else:
+            log.debug(f"[auto] audio bitrate: {audio_stream.bit_rate}")
+
+        if i < len(tl.T.audios) and (lang := tl.T.audios[i].lang) is not None:
+            audio_stream.metadata["language"] = lang
+
+        audio_streams.append(audio_stream)
+
+        if isinstance(audio_path, str):
+            audio_input = bv.open(audio_path)
+            audio_inputs.append(audio_input)
+            audio_gen_frames.append(audio_input.decode(audio=0))
+        else:
+            audio_gen_frames.append(audio_path)
+
+    return audio_streams, audio_gen_frames
+
+
+class Getter:
+    __slots__ = ("container", "stream", "rate")
+
+    def __init__(self, path: Path, stream: int, rate: int):
+        self.container = bv.open(path)
+        self.stream = self.container.streams.audio[0]
+        self.rate = rate
+
+    def get(self, start: int, end: int) -> np.ndarray:
+        # start/end is in samples
+
+        container = self.container
+        stream = self.stream
+        resampler = bv.AudioResampler(format="s16p", layout="stereo", rate=self.rate)
+
+        time_base = stream.time_base
+        assert time_base is not None
+        start_pts = int(start / self.rate / time_base)
+
+        # Seek to the approximate position
+        container.seek(start_pts, stream=stream)
+
+        all_frames = []
+        total_samples = 0
+        target_samples = end - start
+
+        # Decode frames until we have enough samples
+        for frame in container.decode(stream):
+            for resampled_frame in resampler.resample(frame):
+                frame_array = resampled_frame.to_ndarray()
+                all_frames.append(frame_array)
+                total_samples += frame_array.shape[1]
+
+                if total_samples >= target_samples:
+                    break
+
+            if total_samples >= target_samples:
+                break
+
+        result = np.concatenate(all_frames, axis=1)
+
+        # Trim to exact size
+        if result.shape[1] > target_samples:
+            result = result[:, :target_samples]
+        elif result.shape[1] < target_samples:
+            # Pad with zeros if we don't have enough samples
+            padding = np.zeros(
+                (result.shape[0], target_samples - result.shape[1]), dtype=result.dtype
+            )
+            result = np.concatenate([result, padding], axis=1)
+
+        assert result.shape[1] == end - start
+        return result  # Return NumPy array with shape (channels, samples)
+
+
+def _make_new_audio(tl: v3, fmt: bv.AudioFormat, args: Args, log: Log) -> list[Any]:
     sr = tl.sr
     tb = tl.tb
-    output: list[str] = []
-    samples: dict[tuple[FileInfo, int], AudioData] = {}
+    output: list[Any] = []
+    samples: dict[tuple[FileInfo, int], Getter] = {}
 
     norm = parse_norm(args.audio_normalize, log)
 
-    temp = log.temp
-
-    if not tl.a or not tl.a[0]:
+    if not tl.a[0]:
         log.error("Trying to render empty audio timeline")
 
-    for i, layer in enumerate(tl.a):
-        bar.start(len(layer), "Creating new audio")
+    layout = tl.T.layout
+    try:
+        bv.AudioLayout(layout)
+    except ValueError:
+        log.error(f"Invalid audio layout: {layout}")
 
-        path = Path(temp, f"new{i}.wav")
-        output.append(f"{path}")
-        arr: AudioData | None = None
+    for i, layer in enumerate(tl.a):
+        arr: np.ndarray | None = None
+        use_iter = False
 
         for c, clip in enumerate(layer):
             if (clip.src, clip.stream) not in samples:
-                audio_path = ensure.audio(clip.src, clip.stream)
-                with open(audio_path, "rb") as file:
-                    samples[(clip.src, clip.stream)] = read(file)[1]
+                samples[(clip.src, clip.stream)] = Getter(
+                    clip.src.path, clip.stream, sr
+                )
 
+            log.conwrite("Creating audio")
             if arr is None:
                 leng = max(round((layer[-1].start + layer[-1].dur) * sr / tb), sr // tb)
-                dtype = np.int32
-                for _samp_arr in samples.values():
-                    dtype = _samp_arr.dtype
-                    break
+                map_path = Path(log.temp, f"{i}.map")
+                arr = np.memmap(map_path, mode="w+", dtype=np.int16, shape=(2, leng))
 
-                arr = np.memmap(
-                    Path(temp, "asdf.map"),
-                    mode="w+",
-                    dtype=dtype,
-                    shape=(leng, 2),
-                )
-                del leng
-
-            samp_list = samples[(clip.src, clip.stream)]
             samp_start = round(clip.offset * clip.speed * sr / tb)
             samp_end = round((clip.offset + clip.dur) * clip.speed * sr / tb)
-            if samp_end > len(samp_list):
-                samp_end = len(samp_list)
+
+            getter = samples[(clip.src, clip.stream)]
 
             if clip.speed != 1 or clip.volume != 1:
-                clip_arr = process_audio_clip(clip, samp_list, samp_start, samp_end, sr)
+                clip_arr = process_audio_clip(
+                    clip, getter.get(samp_start, samp_end), sr
+                )
             else:
-                clip_arr = samp_list[samp_start:samp_end]
+                clip_arr = getter.get(samp_start, samp_end)
 
             # Mix numpy arrays
             start = clip.start * sr // tb
-            car_len = clip_arr.shape[0]
-
-            if start + car_len > len(arr):
-                # Clip 'clip_arr' if bigger than expected.
-                arr[start:] += clip_arr[: len(arr) - start]
+            clip_samples = clip_arr.shape[1]
+            if start + clip_samples > arr.shape[1]:
+                # Shorten `clip_arr` if bigger than expected.
+                arr[:, start:] += clip_arr[:, : arr.shape[1] - start]
             else:
-                arr[start : start + car_len] += clip_arr
-
-            bar.tick(c)
+                arr[:, start : start + clip_samples] += clip_arr
 
         if arr is not None:
             if norm is None:
-                with open(path, "wb") as fid:
-                    write(fid, sr, arr)
+                if args.mix_audio_streams:
+                    path = Path(log.temp, f"new{i}.wav")
+                    ndarray_to_file(arr, sr, path)
+                    output.append(f"{path}")
+                else:
+                    use_iter = True
             else:
-                pre_master = Path(temp, "premaster.wav")
-                with open(pre_master, "wb") as fid:
-                    write(fid, sr, arr)
+                path = Path(log.temp, f"new{i}.wav")
+                pre_master = Path(log.temp, "premaster.wav")
 
+                ndarray_to_file(arr, sr, pre_master)
                 apply_audio_normalization(norm, pre_master, path, log)
+                output.append(f"{path}")
 
-        bar.end()
+        if use_iter and arr is not None:
+            output.append(ndarray_to_iter(arr, fmt, layout, sr))
 
-    try:
-        Path(temp, "asdf.map").unlink(missing_ok=True)
-    except PermissionError:
-        pass
-
-    if not (args.keep_tracks_separate and ctr.max_audios is None) and len(output) > 1:
-        new_a_file = f"{Path(temp, 'new_audio.wav')}"
+    if args.mix_audio_streams and len(output) > 1:
+        new_a_file = f"{Path(log.temp, 'new_audio.wav')}"
         mix_audio_files(sr, output, new_a_file)
         return [new_a_file]
+
     return output

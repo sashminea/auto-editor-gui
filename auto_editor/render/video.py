@@ -3,20 +3,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-import av
+import bv
 import numpy as np
 
-from auto_editor.output import parse_bitrate
 from auto_editor.timeline import TlImage, TlRect, TlVideo
+from auto_editor.utils.func import parse_bitrate
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
-    from typing import Any
 
+    from auto_editor.__main__ import Args
     from auto_editor.ffwrapper import FileInfo
     from auto_editor.timeline import v3
     from auto_editor.utils.log import Log
-    from auto_editor.utils.types import Args
 
 
 @dataclass(slots=True)
@@ -25,15 +24,12 @@ class VideoFrame:
     src: FileInfo
 
 
-allowed_pix_fmt = av.video.frame.supported_np_pix_fmts
-
-
-def make_solid(width: int, height: int, pix_fmt: str, bg: str) -> av.VideoFrame:
+def make_solid(width: int, height: int, pix_fmt: str, bg: str) -> bv.VideoFrame:
     hex_color = bg.lstrip("#").upper()
     rgb_color = tuple(int(hex_color[i : i + 2], 16) for i in (0, 2, 4))
 
     rgb_array = np.full((height, width, 3), rgb_color, dtype=np.uint8)
-    rgb_frame = av.VideoFrame.from_ndarray(rgb_array, format="rgb24")
+    rgb_frame = bv.VideoFrame.from_ndarray(rgb_array, format="rgb24")
     return rgb_frame.reformat(format=pix_fmt)
 
 
@@ -42,11 +38,11 @@ def make_image_cache(tl: v3) -> dict[tuple[FileInfo, int], np.ndarray]:
     for clip in tl.v:
         for obj in clip:
             if isinstance(obj, TlImage) and (obj.src, obj.width) not in img_cache:
-                with av.open(obj.src.path) as cn:
+                with bv.open(obj.src.path) as cn:
                     my_stream = cn.streams.video[0]
                     for frame in cn.decode(my_stream):
                         if obj.width != 0:
-                            graph = av.filter.Graph()
+                            graph = bv.filter.Graph()
                             graph.link_nodes(
                                 graph.add_buffer(template=my_stream),
                                 graph.add("scale", f"{obj.width}:-1"),
@@ -61,17 +57,16 @@ def make_image_cache(tl: v3) -> dict[tuple[FileInfo, int], np.ndarray]:
 
 
 def render_av(
-    output: av.container.OutputContainer, tl: v3, args: Args, log: Log
-) -> Any:
-    from_ndarray = av.VideoFrame.from_ndarray
+    output: bv.container.OutputContainer, tl: v3, args: Args, log: Log
+) -> Iterator[tuple[int, bv.VideoFrame]]:
+    from_ndarray = bv.VideoFrame.from_ndarray
 
-    src = tl.src
-    cns: dict[FileInfo, av.container.InputContainer] = {}
-    decoders: dict[FileInfo, Iterator[av.VideoFrame]] = {}
+    cns: dict[FileInfo, bv.container.InputContainer] = {}
+    decoders: dict[FileInfo, Iterator[bv.VideoFrame]] = {}
     seek_cost: dict[FileInfo, int] = {}
     tous: dict[FileInfo, int] = {}
 
-    target_pix_fmt = "yuv420p"  # Reasonable default
+    pix_fmt = "yuv420p"  # Reasonable default
     target_fps = tl.tb  # Always constant
     img_cache = make_image_cache(tl)
 
@@ -81,7 +76,7 @@ def render_av(
             first_src = src
 
         if src not in cns:
-            cns[src] = av.open(f"{src.path}")
+            cns[src] = bv.open(f"{src.path}")
 
     for src, cn in cns.items():
         if len(cn.streams.video) > 0:
@@ -101,30 +96,30 @@ def render_av(
             decoders[src] = cn.decode(stream)
 
             if src == first_src and stream.pix_fmt is not None:
-                target_pix_fmt = stream.pix_fmt
+                pix_fmt = stream.pix_fmt
 
     log.debug(f"Tous: {tous}")
     log.debug(f"Clips: {tl.v}")
 
-    codec = av.Codec(args.video_codec, "w")
+    codec = bv.Codec(args.video_codec, "w")
 
-    if codec.canonical_name == "gif":
-        if codec.video_formats is not None and target_pix_fmt in (
-            f.name for f in codec.video_formats
-        ):
-            target_pix_fmt = target_pix_fmt
+    need_valid_fmt = True
+    if codec.video_formats is not None:
+        for video_format in codec.video_formats:
+            if pix_fmt == video_format.name:
+                need_valid_fmt = False
+                break
+
+    if need_valid_fmt:
+        if codec.canonical_name == "gif":
+            pix_fmt = "rgb8"
+        elif codec.canonical_name == "prores":
+            pix_fmt = "yuv422p10le"
         else:
-            target_pix_fmt = "rgb8"
-    elif codec.canonical_name == "prores":
-        target_pix_fmt = "yuv422p10le"
-    else:
-        target_pix_fmt = (
-            target_pix_fmt if target_pix_fmt in allowed_pix_fmt else "yuv420p"
-        )
+            pix_fmt = "yuv420p"
 
     del codec
-    ops = {"mov_flags": "faststart"}
-    output_stream = output.add_stream(args.video_codec, rate=target_fps, options=ops)
+    output_stream = output.add_stream(args.video_codec, rate=target_fps)
 
     cc = output_stream.codec_context
     if args.vprofile is not None:
@@ -136,8 +131,8 @@ def render_av(
 
         cc.profile = args.vprofile.title()
 
-    yield output_stream
-    if not isinstance(output_stream, av.VideoStream):
+    yield output_stream  # type: ignore
+    if not isinstance(output_stream, bv.VideoStream):
         log.error(f"Not a known video codec: {args.video_codec}")
     if src.videos and src.videos[0].lang is not None:
         output_stream.metadata["language"] = src.videos[0].lang
@@ -148,10 +143,10 @@ def render_av(
     else:
         target_width = max(round(tl.res[0] * args.scale), 2)
         target_height = max(round(tl.res[1] * args.scale), 2)
-        scale_graph = av.filter.Graph()
+        scale_graph = bv.filter.Graph()
         scale_graph.link_nodes(
             scale_graph.add(
-                "buffer", video_size="1x1", time_base="1/1", pix_fmt=target_pix_fmt
+                "buffer", video_size="1x1", time_base="1/1", pix_fmt=pix_fmt
             ),
             scale_graph.add("scale", f"{target_width}:{target_height}"),
             scale_graph.add("buffersink"),
@@ -159,7 +154,7 @@ def render_av(
 
     output_stream.width = target_width
     output_stream.height = target_height
-    output_stream.pix_fmt = target_pix_fmt
+    output_stream.pix_fmt = pix_fmt
     output_stream.framerate = target_fps
 
     color_range = src.videos[0].color_range
@@ -191,7 +186,7 @@ def render_av(
     frames_saved = 0
 
     bg = args.background
-    null_frame = make_solid(target_width, target_height, target_pix_fmt, bg)
+    null_frame = make_solid(target_width, target_height, pix_fmt, bg)
     frame_index = -1
 
     for index in range(tl.end):
@@ -250,7 +245,7 @@ def render_av(
 
                 if (frame.width, frame.height) != tl.res:
                     width, height = tl.res
-                    graph = av.filter.Graph()
+                    graph = bv.filter.Graph()
                     graph.link_nodes(
                         graph.add_buffer(template=my_stream),
                         graph.add(
@@ -262,7 +257,7 @@ def render_av(
                     ).vpush(frame)
                     frame = graph.vpull()
             elif isinstance(obj, TlRect):
-                graph = av.filter.Graph()
+                graph = bv.filter.Graph()
                 x, y = obj.x, obj.y
                 graph.link_nodes(
                     graph.add_buffer(template=my_stream),
@@ -308,9 +303,9 @@ def render_av(
             scale_graph.vpush(frame)
             frame = scale_graph.vpull()
 
-        if frame.format.name != target_pix_fmt:
-            frame = frame.reformat(format=target_pix_fmt)
-
-        yield (index, from_ndarray(frame.to_ndarray(), format=frame.format.name))
+        frame = frame.reformat(format=pix_fmt)
+        frame.pts = None  # type: ignore
+        frame.time_base = 0  # type: ignore
+        yield (index, frame)
 
     log.debug(f"Total frames saved seeking: {frames_saved}")

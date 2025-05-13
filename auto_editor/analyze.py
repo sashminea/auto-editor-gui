@@ -9,17 +9,16 @@ from math import ceil
 from tempfile import gettempdir
 from typing import TYPE_CHECKING
 
-import av
+import bv
 import numpy as np
-from av.audio.fifo import AudioFifo
-from av.subtitles.subtitle import AssSubtitle
+from bv.audio.fifo import AudioFifo
+from bv.subtitles.subtitle import AssSubtitle
 
 from auto_editor import __version__
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
     from fractions import Fraction
-    from pathlib import Path
 
     from numpy.typing import NDArray
 
@@ -28,7 +27,7 @@ if TYPE_CHECKING:
     from auto_editor.utils.log import Log
 
 
-__all__ = ("LevelError", "Levels", "iter_audio", "iter_motion")
+__all__ = ("LevelError", "initLevels", "iter_audio", "iter_motion")
 
 
 class LevelError(Exception):
@@ -73,7 +72,7 @@ def mut_remove_large(
             active = False
 
 
-def iter_audio(audio_stream: av.AudioStream, tb: Fraction) -> Iterator[np.float32]:
+def iter_audio(audio_stream: bv.AudioStream, tb: Fraction) -> Iterator[np.float32]:
     fifo = AudioFifo()
     sr = audio_stream.rate
 
@@ -81,10 +80,10 @@ def iter_audio(audio_stream: av.AudioStream, tb: Fraction) -> Iterator[np.float3
     accumulated_error = Fraction(0)
 
     # Resample so that audio data is between [-1, 1]
-    resampler = av.AudioResampler(av.AudioFormat("flt"), audio_stream.layout, sr)
+    resampler = bv.AudioResampler(bv.AudioFormat("flt"), audio_stream.layout, sr)
 
     container = audio_stream.container
-    assert isinstance(container, av.container.InputContainer)
+    assert isinstance(container, bv.container.InputContainer)
 
     for frame in container.decode(audio_stream):
         frame.pts = None  # Skip time checks
@@ -104,7 +103,7 @@ def iter_audio(audio_stream: av.AudioStream, tb: Fraction) -> Iterator[np.float3
 
 
 def iter_motion(
-    video: av.VideoStream, tb: Fraction, blur: int, width: int
+    video: bv.VideoStream, tb: Fraction, blur: int, width: int
 ) -> Iterator[np.float32]:
     video.thread_type = "AUTO"
 
@@ -114,7 +113,7 @@ def iter_motion(
     index = 0
     prev_index = -1
 
-    graph = av.filter.Graph()
+    graph = bv.filter.Graph()
     graph.link_nodes(
         graph.add_buffer(template=video),
         graph.add("scale", f"{width}:-1"),
@@ -124,7 +123,7 @@ def iter_motion(
     ).configure()
 
     container = video.container
-    assert isinstance(container, av.container.InputContainer)
+    assert isinstance(container, bv.container.InputContainer)
 
     for unframe in container.decode(video):
         if unframe.pts is None:
@@ -153,50 +152,47 @@ def iter_motion(
         prev_index = index
 
 
-def obj_tag(path: Path, kind: str, tb: Fraction, obj: Sequence[object]) -> str:
-    mod_time = int(path.stat().st_mtime)
-    key = f"{path.name}:{mod_time:x}:{tb}:" + ",".join(f"{v}" for v in obj)
-    part1 = sha1(key.encode()).hexdigest()[:16]
-
-    return f"{part1}{kind}"
-
-
 @dataclass(slots=True)
 class Levels:
-    src: FileInfo
+    container: bv.container.InputContainer
+    name: str
+    mod_time: int
     tb: Fraction
     bar: Bar
     no_cache: bool
     log: Log
-    strict: bool
 
     @property
     def media_length(self) -> int:
-        if self.src.audios:
+        container = self.container
+        if container.streams.audio:
             if (arr := self.read_cache("audio", (0,))) is not None:
                 return len(arr)
 
-            with av.open(self.src.path, "r") as container:
-                audio_stream = container.streams.audio[0]
-                result = sum(1 for _ in iter_audio(audio_stream, self.tb))
-
+            audio_stream = container.streams.audio[0]
+            result = sum(1 for _ in iter_audio(audio_stream, self.tb))
+            container.seek(0)
             self.log.debug(f"Audio Length: {result}")
             return result
 
         # If there's no audio, get length in video metadata.
-        with av.open(self.src.path) as container:
-            if len(container.streams.video) == 0:
-                self.log.error("Could not get media duration")
+        if not container.streams.video:
+            self.log.error("Could not get media duration")
 
-            video = container.streams.video[0]
-
-            if video.duration is None or video.time_base is None:
-                dur = 0
-            else:
-                dur = int(video.duration * video.time_base * self.tb)
-            self.log.debug(f"Video duration: {dur}")
+        video = container.streams.video[0]
+        if video.duration is None or video.time_base is None:
+            dur = 0
+        else:
+            dur = int(video.duration * video.time_base * self.tb)
+        self.log.debug(f"Video duration: {dur}")
+        container.seek(0)
 
         return dur
+
+    def obj_tag(self, kind: str, obj: Sequence[object]) -> str:
+        mod_time = self.mod_time
+        key = f"{self.name}:{mod_time:x}:{self.tb}:" + ",".join(f"{v}" for v in obj)
+        return f"{sha1(key.encode()).hexdigest()[:16]}{kind}"
 
     def none(self) -> NDArray[np.bool_]:
         return np.ones(self.media_length, dtype=np.bool_)
@@ -208,7 +204,7 @@ class Levels:
         if self.no_cache:
             return None
 
-        key = obj_tag(self.src.path, kind, self.tb, obj)
+        key = self.obj_tag(kind, obj)
         cache_file = os.path.join(gettempdir(), f"ae-{__version__}", f"{key}.npz")
 
         try:
@@ -223,11 +219,8 @@ class Levels:
             return arr
 
         workdir = os.path.join(gettempdir(), f"ae-{__version__}")
-        if not os.path.exists(workdir):
-            os.mkdir(workdir)
-
-        key = obj_tag(self.src.path, kind, self.tb, obj)
-        cache_file = os.path.join(workdir, f"{key}.npz")
+        os.makedirs(workdir, exist_ok=True)
+        cache_file = os.path.join(workdir, f"{self.obj_tag(kind, obj)}.npz")
 
         try:
             np.savez(cache_file, data=arr)
@@ -253,19 +246,19 @@ class Levels:
         return arr
 
     def audio(self, stream: int) -> NDArray[np.float32]:
-        if stream >= len(self.src.audios):
+        container = self.container
+        if stream >= len(container.streams.audio):
             raise LevelError(f"audio: audio stream '{stream}' does not exist.")
 
         if (arr := self.read_cache("audio", (stream,))) is not None:
             return arr
 
-        container = av.open(self.src.path, "r")
         audio = container.streams.audio[stream]
 
         if audio.duration is not None and audio.time_base is not None:
             inaccurate_dur = int(audio.duration * audio.time_base * self.tb)
         elif container.duration is not None:
-            inaccurate_dur = int(container.duration / av.time_base * self.tb)
+            inaccurate_dur = int(container.duration / bv.time_base * self.tb)
         else:
             inaccurate_dur = 1024
 
@@ -286,32 +279,30 @@ class Levels:
             index += 1
 
         bar.end()
+        container.seek(0)
         assert len(result) > 0
         return self.cache(result[:index], "audio", (stream,))
 
     def motion(self, stream: int, blur: int, width: int) -> NDArray[np.float32]:
-        if stream >= len(self.src.videos):
+        container = self.container
+        if stream >= len(container.streams.video):
             raise LevelError(f"motion: video stream '{stream}' does not exist.")
 
         mobj = (stream, width, blur)
         if (arr := self.read_cache("motion", mobj)) is not None:
             return arr
 
-        container = av.open(self.src.path, "r")
         video = container.streams.video[stream]
-
         inaccurate_dur = (
             1024
             if video.duration is None or video.time_base is None
             else int(video.duration * video.time_base * self.tb)
         )
-
         bar = self.bar
         bar.start(inaccurate_dur, "Analyzing motion")
 
         result: NDArray[np.float32] = np.zeros(inaccurate_dur, dtype=np.float32)
         index = 0
-
         for value in iter_motion(video, self.tb, blur, width):
             if index > len(result) - 1:
                 result = np.concatenate(
@@ -322,6 +313,7 @@ class Levels:
             index += 1
 
         bar.end()
+        container.seek(0)
         return self.cache(result[:index], "motion", mobj)
 
     def subtitle(
@@ -331,7 +323,8 @@ class Levels:
         ignore_case: bool,
         max_count: int | None,
     ) -> NDArray[np.bool_]:
-        if stream >= len(self.src.subtitles):
+        container = self.container
+        if stream >= len(container.streams.subtitles):
             raise LevelError(f"subtitle: subtitle stream '{stream}' does not exist.")
 
         try:
@@ -339,9 +332,7 @@ class Levels:
             re_pattern = re.compile(pattern, flags)
         except re.error as e:
             self.log.error(e)
-
         try:
-            container = av.open(self.src.path, "r")
             subtitle_stream = container.streams.subtitles[stream]
             assert isinstance(subtitle_stream.time_base, Fraction)
         except Exception as e:
@@ -352,15 +343,9 @@ class Levels:
         for packet in container.demux(subtitle_stream):
             if packet.pts is None or packet.duration is None:
                 continue
-            for subset in packet.decode():
-                # See definition of `AVSubtitle`
-                # in: https://ffmpeg.org/doxygen/trunk/avcodec_8h_source.html
-                start = float(packet.pts * subtitle_stream.time_base)
-                dur = float(packet.duration * subtitle_stream.time_base)
+            sub_length = max(sub_length, packet.pts + packet.duration)
 
-                end = round((start + dur) * self.tb)
-                sub_length = max(sub_length, end)
-
+        sub_length = round(sub_length * subtitle_stream.time_base * self.tb)
         result = np.zeros((sub_length), dtype=np.bool_)
         del sub_length
 
@@ -372,26 +357,37 @@ class Levels:
                 continue
             if early_exit:
                 break
-            for subset in packet.decode():
-                if max_count is not None and count >= max_count:
-                    early_exit = True
-                    break
 
-                start = float(packet.pts * subtitle_stream.time_base)
-                dur = float(packet.duration * subtitle_stream.time_base)
+            if max_count is not None and count >= max_count:
+                early_exit = True
+                break
 
-                san_start = round(start * self.tb)
-                san_end = round((start + dur) * self.tb)
+            start = float(packet.pts * subtitle_stream.time_base)
+            dur = float(packet.duration * subtitle_stream.time_base)
 
-                for sub in subset:
-                    if not isinstance(sub, AssSubtitle):
-                        continue
+            san_start = round(start * self.tb)
+            san_end = round((start + dur) * self.tb)
 
-                    line = sub.dialogue.decode(errors="ignore")
-                    if line and re.search(re_pattern, line):
-                        result[san_start:san_end] = 1
-                        count += 1
+            for sub in packet.decode():
+                if not isinstance(sub, AssSubtitle):
+                    continue
 
-        container.close()
+                line = sub.dialogue.decode(errors="ignore")
+                if line and re.search(re_pattern, line):
+                    result[san_start:san_end] = 1
+                    count += 1
 
+        container.seek(0)
         return result
+
+
+def initLevels(
+    src: FileInfo, tb: Fraction, bar: Bar, no_cache: bool, log: Log
+) -> Levels:
+    try:
+        container = bv.open(src.path)
+    except bv.FFmpegError as e:
+        log.error(e)
+
+    mod_time = int(src.path.stat().st_mtime)
+    return Levels(container, src.path.name, mod_time, tb, bar, no_cache, log)
