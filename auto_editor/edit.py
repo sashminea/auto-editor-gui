@@ -9,7 +9,7 @@ from pathlib import Path
 from subprocess import run
 from typing import TYPE_CHECKING, Any
 
-import av as bv
+import bv
 
 from auto_editor.ffwrapper import FileInfo
 from auto_editor.lib.contracts import is_int, is_str

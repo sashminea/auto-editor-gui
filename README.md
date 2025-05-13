@@ -65,29 +65,20 @@ Ensure you have the following installed:
    cd auto-editor-gui
    ```
 
-2. Install the Auto-Editor CLI:
+2. Install the Auto-Editor CLI (Python dependencies - Backend):
 
    ```bash
    pip install .
    ```
 
-3. Install dependencies for the root directory:
+3. Install dependencies for the root directory (Electron dependencies - App):
 
    ```bash
    npm install
    ```
 
-4. Install python dependencies:
 
-   ```bash
-   pip install av
-   pip install numpy
-   pip install yt-dlp
-   pip install auto-editor
-   ```
-
-
-5. Navigate to the `frontend` folder and install dependencies and start localhost:
+4. Navigate to the `frontend` folder and install dependencies and start localhost (React/ShadCN - Frontend):
 
    ```bash
    cd frontend
@@ -95,7 +86,7 @@ Ensure you have the following installed:
    npm run dev
    ```
 
-6. Navigate back to the root directory and run the electron app:
+5. Navigate back to the root directory and run the electron app:
 
    ```bash
    cd ..

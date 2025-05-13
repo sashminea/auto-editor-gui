@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
 
-import av as bv
+import bv
 
 from auto_editor.utils.log import Log
 
