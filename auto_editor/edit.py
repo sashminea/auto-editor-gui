@@ -17,7 +17,7 @@ from auto_editor.make_layers import clipify, make_av, make_timeline
 from auto_editor.render.audio import make_new_audio
 from auto_editor.render.subtitle import make_new_subtitles
 from auto_editor.render.video import render_av
-from auto_editor.timeline import v1, v3
+from auto_editor.timeline import set_stream_to_0, v1, v3
 from auto_editor.utils.bar import initBar
 from auto_editor.utils.chunks import Chunk, Chunks
 from auto_editor.utils.cmdkw import ParserError, parse_with_palet, pAttr, pAttrs
@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 def set_output(
     out: str | None, _export: str | None, path: Path | None, log: Log
 ) -> tuple[str, dict[str, Any]]:
-    if out is None:
+    if out is None or out == "-":
         if path is None:
             log.error("`--output` must be set.")  # When a timeline file is the input.
         root, ext = splitext(path)
@@ -50,8 +50,10 @@ def set_output(
                 export = {"export": "final-cut-pro"}
             case ".mlt":
                 export = {"export": "shotcut"}
-            case ".json":
-                export = {"export": "json", "api": 1}
+            case ".json" | ".v1":
+                export = {"export": "v1"}
+            case ".v3":
+                export = {"export": "v3"}
             case _:
                 export = {"export": "default"}
     else:
@@ -67,6 +69,9 @@ def set_output(
     }
     if export["export"] in ext_map:
         ext = ext_map[export["export"]]
+
+    if out == "-":
+        return "-", export
 
     if out is None:
         return f"{root}_ALTERED{ext}", export
@@ -134,8 +139,7 @@ def parse_export(export: str, log: Log) -> dict[str, Any]:
         name, text = exploded
 
     name_attr = pAttr("name", "Auto-Editor Media Group", is_str)
-
-    parsing: dict[str, pAttrs] = {
+    parsing = {
         "default": pAttrs("default"),
         "premiere": pAttrs("premiere", name_attr),
         "final-cut-pro": pAttrs(
@@ -144,16 +148,14 @@ def parse_export(export: str, log: Log) -> dict[str, Any]:
         "resolve": pAttrs("resolve", name_attr),
         "resolve-fcp7": pAttrs("resolve-fcp7", name_attr),
         "shotcut": pAttrs("shotcut"),
-        "json": pAttrs("json", pAttr("api", 3, is_int)),
-        "timeline": pAttrs("json", pAttr("api", 3, is_int)),
+        "v1": pAttrs("v1"),
+        "v3": pAttrs("v3"),
         "clip-sequence": pAttrs("clip-sequence"),
     }
 
     if name in parsing:
         try:
-            _tmp = parse_with_palet(text, parsing[name], {})
-            _tmp["export"] = name
-            return _tmp
+            return {"export": name} | parse_with_palet(text, parsing[name], {})
         except ParserError as e:
             log.error(e)
 
@@ -165,22 +167,16 @@ def edit_media(paths: list[str], args: Args, log: Log) -> None:
     bar = initBar(args.progress)
     tl = src = use_path = None
 
-    if args.keep_tracks_separate:
-        log.deprecated("--keep-tracks-separate is deprecated.")
-        args.keep_tracks_separate = False
-
     if paths:
         path_ext = splitext(paths[0])[1].lower()
         if path_ext == ".xml":
-            from auto_editor.formats.fcp7 import fcp7_read_xml
+            from auto_editor.imports.fcp7 import fcp7_read_xml
 
             tl = fcp7_read_xml(paths[0], log)
         elif path_ext == ".mlt":
-            from auto_editor.formats.shotcut import shotcut_read_mlt
-
-            tl = shotcut_read_mlt(paths[0], log)
-        elif path_ext == ".json":
-            from auto_editor.formats.json import read_json
+            log.error("Reading mlt files not implemented")
+        elif path_ext in {".v1", ".v3", ".json"}:
+            from auto_editor.imports.json import read_json
 
             tl = read_json(paths[0], log)
         else:
@@ -192,7 +188,8 @@ def edit_media(paths: list[str], args: Args, log: Log) -> None:
     assert "export" in export_ops
     export = export_ops["export"]
 
-    if export == "timeline":
+    if output == "-":
+        # When printing to stdout, silence all logs.
         log.quiet = True
 
     if not args.preview:
@@ -221,53 +218,47 @@ def edit_media(paths: list[str], args: Args, log: Log) -> None:
                 "Setting timebase/framerate is not supported when importing timelines"
             )
 
-    if export == "timeline":
-        from auto_editor.formats.json import make_json_timeline
-
-        make_json_timeline(export_ops["api"], 0, tl, log)
-        return
-
     if args.preview:
         from auto_editor.preview import preview
 
         preview(tl, log)
         return
 
-    if export == "json":
-        from auto_editor.formats.json import make_json_timeline
+    if export in {"v1", "v3"}:
+        from auto_editor.exports.json import make_json_timeline
 
-        make_json_timeline(export_ops["api"], output, tl, log)
+        make_json_timeline(export, output, tl, log)
         return
 
     if export in {"premiere", "resolve-fcp7"}:
-        from auto_editor.formats.fcp7 import fcp7_write_xml
+        from auto_editor.exports.fcp7 import fcp7_write_xml
 
         is_resolve = export.startswith("resolve")
         fcp7_write_xml(export_ops["name"], output, is_resolve, tl)
         return
 
     if export == "final-cut-pro":
-        from auto_editor.formats.fcp11 import fcp11_write_xml
+        from auto_editor.exports.fcp11 import fcp11_write_xml
 
         ver = export_ops["version"]
         fcp11_write_xml(export_ops["name"], ver, output, False, tl, log)
         return
 
     if export == "resolve":
-        from auto_editor.formats.fcp11 import fcp11_write_xml
-        from auto_editor.timeline import set_stream_to_0
+        from auto_editor.exports.fcp11 import fcp11_write_xml
 
-        assert src is not None
-        set_stream_to_0(src, tl, log)
+        set_stream_to_0(tl, log)
         fcp11_write_xml(export_ops["name"], 10, output, True, tl, log)
         return
 
     if export == "shotcut":
-        from auto_editor.formats.shotcut import shotcut_write_mlt
+        from auto_editor.exports.shotcut import shotcut_write_mlt
 
         shotcut_write_mlt(output, tl)
         return
 
+    if output == "-":
+        log.error("Exporting media files to stdout is not supported.")
     out_ext = splitext(output)[1].replace(".", "")
 
     # Check if export options make sense.

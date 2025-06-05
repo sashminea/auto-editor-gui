@@ -307,7 +307,9 @@ class Runner:
         assert len(fileinfo(out).audios) == 2
 
     def test_export_json(self):
-        out = self.main(["example.mp4"], ["--export_as_json"], "c77130d763d40e8.json")
+        out = self.main(["example.mp4"], ["--export", "v1"], "c77130d763d40e8.json")
+        self.main([out], [])
+        out = self.main(["example.mp4"], ["--export", "v1"], "c77130d763d40e8.v1")
         self.main([out], [])
 
     def test_import_v1(self):
@@ -320,7 +322,7 @@ class Runner:
         self.main([path], [])
 
     def test_res_with_v1(self):
-        v1 = self.main(["example.mp4"], ["--export", "json"], "input.json")
+        v1 = self.main(["example.mp4"], ["--export", "v1"], "input.v1")
         out = self.main([v1], ["-res", "720,720"], "output.mp4")
 
         output = fileinfo(out)
@@ -393,11 +395,11 @@ class Runner:
     def test_clip_sequence(self) -> None:
         for test_name in all_files:
             test_file = f"resources/{test_name}"
-            self.main([test_file], ["--export_as_clip_sequence"])
+            self.main([test_file], ["--export", "clip-sequence"])
 
     def test_codecs(self) -> None:
-        self.main(["example.mp4"], ["--video_codec", "h264"])
-        self.main(["example.mp4"], ["--audio_codec", "ac3"])
+        self.main(["example.mp4"], ["--video-codec", "h264"])
+        self.main(["example.mp4"], ["--audio-codec", "ac3"])
 
     # Issue #241
     def test_multi_track_edit(self):
@@ -696,7 +698,7 @@ class Runner:
         self.raw(["palet", "resources/scripts/testmath.pal"])
 
 
-def run_tests(runner: Runner, tests: list[Callable], args: TestArgs) -> None:
+def run_tests(tests: list[Callable], args: TestArgs) -> None:
     if args.only != []:
         tests = list(filter(lambda t: t.__name__ in args.only, tests))
 
@@ -795,7 +797,7 @@ def main(sys_args: list[str] | None = None) -> None:
             ]
         )
     try:
-        run_tests(run, tests, args)
+        run_tests(tests, args)
     except KeyboardInterrupt:
         print("Testing Interrupted by User.")
         shutil.rmtree(run.temp_dir)

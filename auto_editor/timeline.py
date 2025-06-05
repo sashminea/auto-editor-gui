@@ -38,13 +38,15 @@ class v1:
 
 
 @dataclass(slots=True)
-class TlVideo:
+class Clip:
     start: int
     dur: int
     src: FileInfo
     offset: int
-    speed: float
     stream: int
+
+    speed: float = 1.0
+    volume: float = 1.0
 
     def as_dict(self) -> dict:
         return {
@@ -54,29 +56,6 @@ class TlVideo:
             "dur": self.dur,
             "offset": self.offset,
             "speed": self.speed,
-            "stream": self.stream,
-        }
-
-
-@dataclass(slots=True)
-class TlAudio:
-    start: int
-    dur: int
-    src: FileInfo
-    offset: int
-    speed: float
-    volume: float
-    stream: int
-
-    def as_dict(self) -> dict:
-        return {
-            "name": "audio",
-            "src": self.src,
-            "start": self.start,
-            "dur": self.dur,
-            "offset": self.offset,
-            "speed": self.speed,
-            "volume": self.volume,
             "stream": self.stream,
         }
 
@@ -176,14 +155,12 @@ rect_builder = pAttrs(
 visual_objects = {
     "rect": (TlRect, rect_builder),
     "image": (TlImage, img_builder),
-    "video": (TlVideo, video_builder),
+    "video": (Clip, video_builder),
 }
 
-VLayer = list[TlVideo | TlImage | TlRect]
+VLayer = list[Clip | TlImage | TlRect]
 VSpace = list[VLayer]
-
-ALayer = list[TlAudio]
-ASpace = list[ALayer]
+ASpace = list[list[Clip]]
 
 
 @dataclass(slots=True)
@@ -248,7 +225,7 @@ video\n"""
         for i, layer in enumerate(self.v):
             result += f" v{i} "
             for obj in layer:
-                if isinstance(obj, TlVideo):
+                if isinstance(obj, Clip):
                     result += (
                         f"[#:start {obj.start} #:dur {obj.dur} #:off {obj.offset}] "
                     )
@@ -283,7 +260,7 @@ video\n"""
     def sources(self) -> Iterator[FileInfo]:
         for vclips in self.v:
             for v in vclips:
-                if isinstance(v, TlVideo):
+                if isinstance(v, Clip):
                     yield v.src
         for aclips in self.a:
             for a in aclips:
@@ -296,29 +273,36 @@ video\n"""
                 seen.add(source.path)
                 yield source
 
-    def _duration(self, layer: VSpace | ASpace) -> int:
-        total_dur = 0
-        for clips in layer:
-            dur = 0
-            for clip in clips:
-                dur += clip.dur
-            total_dur = max(total_dur, dur)
-        return total_dur
+    def __len__(self) -> int:
+        result = 0
+        for clips in self.v + self.a:
+            if len(clips) > 0:
+                lastClip = clips[-1]
+                result = max(result, lastClip.start + lastClip.dur)
 
-    def out_len(self) -> int:
-        # Calculates the duration of the timeline
-        return max(self._duration(self.v), self._duration(self.a))
+        return result
 
     def as_dict(self) -> dict:
+        def aclip_to_dict(self: Clip) -> dict:
+            return {
+                "name": "audio",
+                "src": self.src,
+                "start": self.start,
+                "dur": self.dur,
+                "offset": self.offset,
+                "speed": self.speed,
+                "volume": self.volume,
+                "stream": self.stream,
+            }
+
         v = []
-        for i, vlayer in enumerate(self.v):
+        a = []
+        for vlayer in self.v:
             vb = [vobj.as_dict() for vobj in vlayer]
             if vb:
                 v.append(vb)
-
-        a = []
-        for i, alayer in enumerate(self.a):
-            ab = [aobj.as_dict() for aobj in alayer]
+        for layer in self.a:
+            ab = [aclip_to_dict(clip) for clip in layer]
             if ab:
                 a.append(ab)
 
@@ -346,7 +330,7 @@ video\n"""
         return self.T.sr
 
 
-def make_tracks_dir(tracks_dir: Path, path: Path) -> None:
+def make_tracks_dir(tracks_dir: Path) -> None:
     from os import mkdir
     from shutil import rmtree
 
@@ -357,7 +341,7 @@ def make_tracks_dir(tracks_dir: Path, path: Path) -> None:
         mkdir(tracks_dir)
 
 
-def set_stream_to_0(src: FileInfo, tl: v3, log: Log) -> None:
+def set_stream_to_0(tl: v3, log: Log) -> None:
     dir_exists = False
     cache: dict[Path, FileInfo] = {}
 
@@ -366,7 +350,7 @@ def set_stream_to_0(src: FileInfo, tl: v3, log: Log) -> None:
 
         fold = path.parent / f"{path.stem}_tracks"
         if not dir_exists:
-            make_tracks_dir(fold, path)
+            make_tracks_dir(fold)
             dir_exists = True
 
         newtrack = fold / f"{path.stem}_{i}.wav"

@@ -8,7 +8,6 @@ from typing import Any, Literal, TypedDict
 from auto_editor.ffwrapper import FileInfo
 from auto_editor.json import dump
 from auto_editor.make_layers import make_sane_timebase
-from auto_editor.timeline import v3
 from auto_editor.utils.func import aspect_ratio
 from auto_editor.utils.log import Log
 from auto_editor.vanparse import ArgumentParser
@@ -86,19 +85,7 @@ def main(sys_args: list[str] = sys.argv[1:]) -> None:
             log.error(f"Could not find '{file}'")
 
         ext = os.path.splitext(file)[1]
-        if ext == ".json":
-            from auto_editor.formats.json import read_json
-
-            tl = read_json(file, log)
-            file_info[file] = {"type": "timeline"}
-            file_info[file]["version"] = "v3" if isinstance(tl, v3) else "v1"
-
-            clip_lens = [clip.dur / clip.speed for clip in tl.a[0]]
-            file_info[file]["clips"] = len(clip_lens)
-
-            continue
-
-        if ext in {".xml", ".fcpxml", ".mlt"}:
+        if ext in {".v1", ".v3", ".json", ".xml", ".fcpxml", ".mlt"}:
             file_info[file] = {"type": "timeline"}
             continue
 
@@ -126,7 +113,7 @@ def main(sys_args: list[str] = sys.argv[1:]) -> None:
                 f"{recTb.numerator}/{recTb.denominator}"
             )
 
-        for track, v in enumerate(src.videos):
+        for v in src.videos:
             w, h = v.width, v.height
 
             vid: VideoJson = {
@@ -147,7 +134,7 @@ def main(sys_args: list[str] = sys.argv[1:]) -> None:
             }
             file_info[file]["video"].append(vid)
 
-        for track, a in enumerate(src.audios):
+        for a in src.audios:
             aud: AudioJson = {
                 "codec": a.codec,
                 "layout": a.layout,
@@ -158,7 +145,7 @@ def main(sys_args: list[str] = sys.argv[1:]) -> None:
             }
             file_info[file]["audio"].append(aud)
 
-        for track, s_stream in enumerate(src.subtitles):
+        for s_stream in src.subtitles:
             sub: SubtitleJson = {"codec": s_stream.codec, "lang": s_stream.lang}
             file_info[file]["subtitle"].append(sub)
 

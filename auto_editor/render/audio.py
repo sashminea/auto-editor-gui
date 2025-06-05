@@ -15,7 +15,7 @@ from auto_editor.json import load
 from auto_editor.lang.palet import env
 from auto_editor.lib.contracts import andc, between_c, is_int_or_float
 from auto_editor.lib.err import MyError
-from auto_editor.timeline import TlAudio, v3
+from auto_editor.timeline import Clip, v3
 from auto_editor.utils.cmdkw import ParserError, parse_with_palet, pAttr, pAttrs
 from auto_editor.utils.func import parse_bitrate
 from auto_editor.utils.log import Log
@@ -155,7 +155,7 @@ def apply_audio_normalization(
         output_file.close()
 
 
-def process_audio_clip(clip: TlAudio, data: np.ndarray, sr: int) -> np.ndarray:
+def process_audio_clip(clip: Clip, data: np.ndarray, sr: int) -> np.ndarray:
     to_s16 = bv.AudioResampler(format="s16", layout="stereo", rate=sr)
     input_buffer = BytesIO()
 
@@ -272,7 +272,7 @@ def mix_audio_files(sr: int, audio_paths: list[str], output_path: str) -> None:
     max_val = np.max(np.abs(mixed_audio))
     if max_val > 0:
         mixed_audio = mixed_audio * (32767 / max_val)
-    mixed_audio = mixed_audio.astype(np.int16)  # type: ignore
+    mixed_audio = mixed_audio.astype(np.int16)
 
     output_container = bv.open(output_path, mode="w")
     output_stream = output_container.add_stream("pcm_s16le", rate=sr)
@@ -383,7 +383,7 @@ class Getter:
 
     def __init__(self, path: Path, stream: int, rate: int):
         self.container = bv.open(path)
-        self.stream = self.container.streams.audio[0]
+        self.stream = self.container.streams.audio[stream]
         self.rate = rate
 
     def get(self, start: int, end: int) -> np.ndarray:
@@ -454,7 +454,7 @@ def _make_new_audio(tl: v3, fmt: bv.AudioFormat, args: Args, log: Log) -> list[A
         arr: np.ndarray | None = None
         use_iter = False
 
-        for c, clip in enumerate(layer):
+        for clip in layer:
             if (clip.src, clip.stream) not in samples:
                 samples[(clip.src, clip.stream)] = Getter(
                     clip.src.path, clip.stream, sr

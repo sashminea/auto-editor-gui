@@ -1,16 +1,8 @@
-from __future__ import annotations
-
 import xml.etree.ElementTree as ET
-from typing import TYPE_CHECKING, Any, cast
+from typing import cast
 
-from auto_editor.timeline import v3
+from auto_editor.timeline import Clip, v3
 from auto_editor.utils.func import aspect_ratio, to_timecode
-
-if TYPE_CHECKING:
-    from collections.abc import Sequence
-
-    from auto_editor.timeline import TlAudio, TlVideo
-    from auto_editor.utils.log import Log
 
 """
 Shotcut uses the MLT timeline format
@@ -19,10 +11,6 @@ See docs here:
 https://mltframework.org/docs/mltxml/
 
 """
-
-
-def shotcut_read_mlt(path: str, log: Log) -> v3:
-    raise NotImplementedError
 
 
 def shotcut_write_mlt(output: str, tl: v3) -> None:
@@ -61,7 +49,7 @@ def shotcut_write_mlt(output: str, tl: v3) -> None:
     playlist_bin = ET.SubElement(mlt, "playlist", id="main_bin")
     ET.SubElement(playlist_bin, "property", name="xml_retain").text = "1"
 
-    global_out = to_timecode(tl.out_len() / tb, "standard")
+    global_out = to_timecode(len(tl) / tb, "standard")
 
     producer = ET.SubElement(mlt, "producer", id="bg")
 
@@ -83,7 +71,7 @@ def shotcut_write_mlt(output: str, tl: v3) -> None:
     producers = 0
 
     if tl.v:
-        clips: Sequence[TlVideo | TlAudio] = cast(Any, tl.v[0])
+        clips = cast(list[Clip], tl.v[0])
     elif tl.a:
         clips = tl.a[0]
     else:
@@ -154,4 +142,7 @@ def shotcut_write_mlt(output: str, tl: v3) -> None:
 
     ET.indent(tree, space="\t", level=0)
 
-    tree.write(output, xml_declaration=True, encoding="utf-8")
+    if output == "-":
+        print(ET.tostring(mlt, encoding="unicode"))
+    else:
+        tree.write(output, xml_declaration=True, encoding="utf-8")
