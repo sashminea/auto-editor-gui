@@ -177,6 +177,7 @@
 (define core-docs {hash
     "Assignment" #[
         (syntax "define" "id expr" (text "Set "'id" to the result of "'expr"."))
+        (syntax "defn" "id expr" (text "Alias for "'define"."))
         (syntax "set!" "id expr"
             (text
                 "Set "'id" to the result of "'expr" if "'id
@@ -282,7 +283,6 @@
         (pred "frac?"
             (text "Returns "#t" if "'v" is a fraction (a rational number), "#f" otherwise.")
         )
-        (pred "complex?" (text "Returns "#t" if "'v" is an complex number, "#f" otherwise."))
         (pred "nat?"
             (text "Returns "#t" if "'v" is an integer and "'v" is >= 0, "#f" otherwise.")
         )
@@ -357,8 +357,6 @@
         (proc "abs" '((x real?) real?) (text "Returns the absolute value of "'x"."))
         (proc "max" '((x real?) ... real?) (text "Returns largest value of the "'x"s."))
         (proc "min" '((x real?) ... real?) (text "Returns smallest value of the "'x"s."))
-        (proc "real-part" '((z number?) real?) (text "Returns the real part of "'z"."))
-        (proc "imag-part" '((z number?) real?) (text "Returns the imaginary part of "'z"."))
         (proc "round" '((x real?) int?)
             (text
                 "Returns the closest integer to "'x" resolving ties in favor of even numbers."
@@ -366,9 +364,6 @@
         )
         (proc "pow" '((z real?) (w real?) real?)
             (text "Returns "'z" raised to the "'w" power.")
-        )
-        (proc "sqrt" '((z number?) number?)
-            (text "Returns the square root of "'z".")
         )
     ]
     "Modules" #[

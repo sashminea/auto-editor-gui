@@ -65,20 +65,11 @@ class Token:
 
 
 class Lexer:
-    __slots__ = (
-        "filename",
-        "text",
-        "allow_lang_prag",
-        "pos",
-        "char",
-        "lineno",
-        "column",
-    )
+    __slots__ = ("filename", "text", "pos", "char", "lineno", "column")
 
-    def __init__(self, filename: str, text: str, langprag: bool = False):
+    def __init__(self, filename: str, text: str):
         self.filename = filename
         self.text = text
-        self.allow_lang_prag = langprag
         self.pos: int = 0
         self.lineno: int = 1
         self.column: int = 1
@@ -157,7 +148,7 @@ class Lexer:
                 token = SEC
             elif unit == "dB":
                 token = DB
-            elif unit != "i" and unit != "%":
+            elif unit != "%":
                 return Token(
                     VAL,
                     Sym(result + unit, self.lineno, self.column),
@@ -166,9 +157,7 @@ class Lexer:
                 )
 
         try:
-            if unit == "i":
-                return Token(VAL, complex(result + "j"), self.lineno, self.column)
-            elif unit == "%":
+            if unit == "%":
                 return Token(VAL, float(result) / 100, self.lineno, self.column)
             elif "/" in result:
                 return Token(token, Fraction(result), self.lineno, self.column)
@@ -289,32 +278,6 @@ class Lexer:
                         self.advance()
                     if self.char is None or self.char == "\n":
                         continue
-
-                elif self.char == "l" and self.peek() == "a":
-                    buf = StringIO()
-                    while self.char_is_norm():
-                        assert self.char is not None
-                        buf.write(self.char)
-                        self.advance()
-
-                    result = buf.getvalue()
-                    if result != "lang":
-                        self.error(f"Unknown hash literal `#{result}`")
-                    if not self.allow_lang_prag:
-                        self.error("#lang pragma is not allowed here")
-
-                    self.advance()
-                    buf = StringIO()
-                    while not self.is_whitespace():
-                        assert self.char is not None
-                        buf.write(self.char)
-                        self.advance()
-
-                    result = buf.getvalue()
-                    if result != "palet":
-                        self.error(f"Invalid #lang: {result}")
-                    self.allow_lang_prag = False
-                    continue
                 else:
                     return self.hash_literal()
 

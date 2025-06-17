@@ -29,8 +29,8 @@ if TYPE_CHECKING:
 
 
 def set_output(
-    out: str | None, _export: str | None, path: Path | None, log: Log
-) -> tuple[str, dict[str, Any]]:
+    out: str | None, export: str | None, path: Path | None, log: Log
+) -> tuple[str, str]:
     if out is None or out == "-":
         if path is None:
             log.error("`--output` must be set.")  # When a timeline file is the input.
@@ -42,33 +42,33 @@ def set_output(
         # Use `mp4` as the default, because it is most compatible.
         ext = ".mp4" if path is None else path.suffix
 
-    if _export is None:
+    if export is None:
         match ext:
             case ".xml":
-                export: dict[str, Any] = {"export": "premiere"}
+                export = "premiere"
             case ".fcpxml":
-                export = {"export": "final-cut-pro"}
+                export = "final-cut-pro"
             case ".mlt":
-                export = {"export": "shotcut"}
+                export = "shotcut"
             case ".json" | ".v1":
-                export = {"export": "v1"}
+                export = "v1"
             case ".v3":
-                export = {"export": "v3"}
+                export = "v3"
             case _:
-                export = {"export": "default"}
-    else:
-        export = parse_export(_export, log)
+                export = "default"
 
-    ext_map = {
-        "premiere": ".xml",
-        "resolve-fcp7": ".xml",
-        "final-cut-pro": ".fcpxml",
-        "resolve": ".fcpxml",
-        "shotcut": ".mlt",
-        "json": ".json",
-    }
-    if export["export"] in ext_map:
-        ext = ext_map[export["export"]]
+    match export:
+        case "premiere" | "resolve-fcp7":
+            ext = ".xml"
+        case "final-cut-pro" | "resolve":
+            ext = ".fcpxml"
+        case "shotcut":
+            ext = ".mlt"
+        case "v1":
+            if ext != ".json":
+                ext = ".v1"
+        case "v3":
+            ext = ".v3"
 
     if out == "-":
         return "-", export
@@ -184,9 +184,13 @@ def edit_media(paths: list[str], args: Args, log: Log) -> None:
             src = sources[0]
             use_path = src.path
 
-    output, export_ops = set_output(args.output, args.export, use_path, log)
-    assert "export" in export_ops
-    export = export_ops["export"]
+    if args.export is None:
+        output, export = set_output(args.output, args.export, use_path, log)
+        export_ops: dict[str, Any] = {"export": export}
+    else:
+        export_ops = parse_export(args.export, log)
+        export = export_ops["export"]
+        output, _ = set_output(args.output, export, use_path, log)
 
     if output == "-":
         # When printing to stdout, silence all logs.
@@ -286,7 +290,7 @@ def edit_media(paths: list[str], args: Args, log: Log) -> None:
         output = bv.open(output_path, "w", container_options=options)
 
         # Setup video
-        if ctr.default_vid != "none" and tl.v:
+        if ctr.default_vid not in ("none", "png") and tl.v:
             vframes = render_av(output, tl, args, log)
             output_stream: bv.VideoStream | None
             output_stream = next(vframes)  # type: ignore

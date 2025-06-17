@@ -202,6 +202,19 @@ class Runner:
             assert audio.language == "eng"
             assert audio.layout.name == "stereo"
 
+    def test_video_to_mp3(self) -> None:
+        out = self.main(["example.mp4"], [], output="example_ALTERED.mp3")
+        with bv.open(out) as container:
+            assert container.duration is not None
+            assert container.duration > 17300000 and container.duration < 2 << 24
+
+            assert len(container.streams) == 1
+            audio = container.streams[0]
+            assert isinstance(audio, bv.AudioStream)
+            assert audio.codec.name in ("mp3", "mp3float")
+            assert audio.sample_rate == 48000
+            assert audio.layout.name == "stereo"
+
     def test_to_mono(self) -> None:
         out = self.main(["example.mp4"], ["-layout", "mono"], output="example_mono.mp4")
         with bv.open(out) as container:
@@ -516,9 +529,6 @@ class Runner:
         assert output.videos[0].pix_fmt == "yuv420p"
 
     def test_encode_hevc(self):
-        if os.environ.get("GITHUB_ACTIONS") == "true":
-            raise SkipTest()
-
         out = self.main(["resources/testsrc.mp4"], ["-c:v", "hevc"], "out.mkv")
         output = fileinfo(out)
         assert output.videos[0].codec == "hevc"
@@ -563,15 +573,12 @@ class Runner:
             ("238.5", 238.5),
             ("-34", -34),
             ("-98.3", -98.3),
-            ("+3i", 3j),
             ("3sec", 90),
             ("-3sec", -90),
             ("0.2sec", 6),
             ("(+ 4 3)", 7),
             ("(+ 4 3 2)", 9),
             ("(+ 10.5 3)", 13.5),
-            ("(+ 3+4i -2-2i)", 1 + 2j),
-            ("(+ 3+4i -2-2i 5)", 6 + 2j),
             ("(- 4 3)", 1),
             ("(- 3)", -3),
             ("(- 10.5 3)", 7.5),
@@ -580,7 +587,6 @@ class Runner:
             ("(/ 5)", 0.2),
             ("(/ 6 1)", 6.0),
             ("30/1", Fraction(30)),
-            ("(sqrt -4)", 2j),
             ("(pow 2 3)", 8),
             ("(pow 4 0.5)", 2.0),
             ("(abs 1.0)", 1.0),
@@ -595,7 +601,6 @@ class Runner:
             ("(int? #t)", False),
             ("(int? #f)", False),
             ("(int? 4/5)", False),
-            ("(int? 0+2i)", False),
             ('(int? "hello")', False),
             ('(int? "3")', False),
             ("(float? -23.4)", True),
@@ -609,7 +614,6 @@ class Runner:
             ('(define apple "Red Wood") apple', "Red Wood"),
             ("(= 1 1.0)", True),
             ("(= 1 2)", False),
-            ("(= 2+3i 2+3i 2+3i)", True),
             ("(= 1)", True),
             ("(+)", 0),
             ("(*)", 1),
@@ -618,7 +622,6 @@ class Runner:
             ('(if #f mango "Hi")', "Hi"),
             ('{if (= [+ 3 4] 7) "yes" "no"}', "yes"),
             ("((if #t + -) 3 4)", 7),
-            ("((if #t + oops) 3+3i 4-2i)", 7 + 1j),
             ("((if #f + -) 3 4)", -1),
             ("(when (positive? 3) 17)", 17),
             ("(string)", ""),

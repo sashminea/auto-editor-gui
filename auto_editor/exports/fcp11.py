@@ -1,17 +1,10 @@
-from __future__ import annotations
-
 import xml.etree.ElementTree as ET
-from typing import TYPE_CHECKING, cast
+from fractions import Fraction
 from xml.etree.ElementTree import Element, ElementTree, SubElement, indent
 
+from auto_editor.ffwrapper import FileInfo
 from auto_editor.timeline import Clip, v3
-
-if TYPE_CHECKING:
-    from fractions import Fraction
-
-    from auto_editor.ffwrapper import FileInfo
-    from auto_editor.utils.log import Log
-
+from auto_editor.utils.log import Log
 
 """
 Export a FCPXML 11 file readable with Final Cut Pro 10.6.8 or later.
@@ -52,6 +45,35 @@ def make_name(src: FileInfo, tb: Fraction) -> str:
     return "FFVideoFormatRateUndefined"
 
 
+def parseSMPTE(val: str, fps: Fraction, log: Log) -> int:
+    if len(val) == 0:
+        return 0
+    try:
+        parts = val.split(":")
+        if len(parts) != 4:
+            raise ValueError(f"Invalid SMPTE format: {val}")
+
+        hours, minutes, seconds, frames = map(int, parts)
+
+        if (
+            hours < 0
+            or minutes < 0
+            or minutes >= 60
+            or seconds < 0
+            or seconds >= 60
+            or frames < 0
+        ):
+            raise ValueError(f"Invalid SMPTE values: {val}")
+
+        if frames >= fps:
+            raise ValueError(f"Frame count {frames} exceeds fps {fps}")
+
+        total_frames = (hours * 3600 + minutes * 60 + seconds) * fps + frames
+        return int(round(total_frames))
+    except (ValueError, ZeroDivisionError) as e:
+        log.error(f"Cannot parse SMPTE timecode '{val}': {e}")
+
+
 def fcp11_write_xml(
     group_name: str, version: int, output: str, resolve: bool, tl: v3, log: Log
 ) -> None:
@@ -90,12 +112,14 @@ def fcp11_write_xml(
             height=f"{tl.res[1]}",
             colorSpace=get_colorspace(one_src),
         )
+
+        startPoint = parseSMPTE(one_src.timecode, tl.tb, log)
         r2 = SubElement(
             resources,
             "asset",
             id=f"r{i * 2 + 2}",
             name=one_src.path.stem,
-            start="0s",
+            start=fraction(startPoint),
             hasVideo="1" if one_src.videos else "0",
             format=f"r{i * 2 + 1}",
             hasAudio="1" if one_src.audios else "0",
@@ -122,12 +146,14 @@ def fcp11_write_xml(
     spine = SubElement(sequence, "spine")
 
     def make_clip(ref: str, clip: Clip) -> None:
+        startPoint = parseSMPTE(clip.src.timecode, tl.tb, log)
+
         clip_properties = {
             "name": proj_name,
             "ref": ref,
-            "offset": fraction(clip.start),
+            "offset": fraction(clip.start + startPoint),
             "duration": fraction(clip.dur),
-            "start": fraction(clip.offset),
+            "start": fraction(clip.offset + startPoint),
             "tcFormat": "NDF",
         }
         asset = SubElement(spine, "asset-clip", clip_properties)
@@ -146,7 +172,7 @@ def fcp11_write_xml(
             )
 
     if tl.v and tl.v[0]:
-        clips = cast(list[Clip], tl.v[0])
+        clips = [clip for clip in tl.v[0] if isinstance(clip, Clip)]
     elif tl.a and tl.a[0]:
         clips = tl.a[0]
     else:
