@@ -1,11 +1,20 @@
 # Auto-Editor GUI
 
-A desktop app that puts a friendly interface on top of [Auto-Editor](https://github.com/WyattBlue/auto-editor), the command-line tool that automatically cuts the dead space (usually silence) out of video and audio.
-
-Cutting silence by hand is a slow first pass on any long recording. Auto-Editor does it by analysing loudness. This GUI lets you pick a file, tune the settings, preview your clip, and run the edit without writing a command yourself.
+A desktop app for [auto-editor](https://github.com/WyattBlue/auto-editor) that cuts the silence and dead space out of video and audio. Pick a file, tune a couple of settings, and export either an edited video or a timeline for Premiere Pro, DaVinci Resolve, Final Cut Pro, Shotcut and more.
+ 
+The app builds the auto-editor command for you, shows it, runs it, and reports live progress. Nothing needs to be installed: Python and auto-editor are bundled.
 
 <!-- Update this screenshot to show the redesigned UI -->
 <img width="1488" height="960" alt="Auto-Editor GUI" src="https://github.com/user-attachments/assets/27ce8d0e-22b7-4ade-871d-fb78b6c3c874" />
+
+## Download
+ 
+1. Open the [**Releases**](https://github.com/sashminea/auto-editor-gui/releases/latest) page.
+2. Download `Auto-Editor-GUI-Setup-x.y.z.exe` and run it.
+3. Start **Auto-Editor GUI** from the Start Menu or desktop shortcut.
+Requires Windows 10 or 11 (64-bit). The installer does not need admin rights.
+ 
+> **Windows SmartScreen warning:** the installer is not code-signed yet, so Windows may say "Windows protected your PC". Click **More info**, then **Run anyway**.
 
 ## Export Methods:
 
@@ -106,6 +115,7 @@ For finer control, open the other pages from the sidebar. Their options are adde
 | The preview says the format can't be previewed | Chromium can't play every format (for example some `.mkv` and `.avi` files). You can still export. |
 | The progress bar stays empty | Open **Show output** in the Progress panel to see what Auto-Editor prints. |
 | Something else went wrong | The app log is in the app's data folder, at `logs/main.log`. On Windows that is `%APPDATA%\auto-editor-gui\logs\main.log`. |
+
 
 
 ## Contributing
