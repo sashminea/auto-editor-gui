@@ -1,0 +1,210 @@
+import std/[strformat, strutils]
+
+var enableVpx = getEnv("DISABLE_VPX").len == 0
+var enableSvtav1 = getEnv("DISABLE_SVTAV1").len == 0
+var enableHevc = getEnv("DISABLE_HEVC").len == 0 and not defined(emscripten)
+var enableWhisper = getEnv("DISABLE_WHISPER").len == 0
+var enableVpl = getEnv("DISABLE_VPL").len == 0 and not defined(macosx)
+var enableLibass = getEnv("DISABLE_LIBASS").len == 0
+
+when defined(danger) or defined(release):
+  switch("panics", "on")
+
+# hostOS/hostCPU are the *target* here
+let buildPath = (
+  if defined(dynamic): "build_dyn"
+  elif hostCPU == "wasm32": "build_wasm"
+  elif defined(emscripten): "build_wasm64"
+  elif hostOS == "windows" and hostCPU == "arm64": "build_winarm"
+  elif hostOS == "windows" and hostCPU != "arm64": "build_win"
+  elif hostOS == "linux" and hostCPU == "arm": "build_armv7"
+  else: "build"
+)
+switch("nimcache", &"{buildPath}/nimcache")
+
+when defined(flto):
+  switch("passC", "-flto")
+  switch("passL", "-flto")
+
+when defined(dynamic):
+  let ffmpegCflags = gorgeEx("pkg-config --cflags libavutil", "")
+  if ffmpegCflags.exitCode == 0:
+    switch("passC", ffmpegCflags.output.strip())
+  let ffmpegLibs = gorgeEx("pkg-config --libs libavdevice libavfilter libavformat libavcodec libswresample libswscale libavutil", "")
+  if ffmpegLibs.exitCode == 0:
+    switch("passL", ffmpegLibs.output.strip())
+
+  let whisperCflags = gorgeEx("pkg-config --cflags whisper parakeet ggml", "")
+  let whisperLibs = gorgeEx("pkg-config --libs whisper parakeet ggml", "")
+  if enableWhisper and whisperCflags.exitCode == 0 and whisperLibs.exitCode == 0:
+    switch("define", "whisper")
+    switch("passC", whisperCflags.output.strip())
+    switch("passL", whisperLibs.output.strip())
+
+  let assCflags = gorgeEx("pkg-config --cflags libass", "")
+  let assLibs = gorgeEx("pkg-config --libs libass", "")
+  if enableLibass and assCflags.exitCode == 0 and assLibs.exitCode == 0:
+    switch("define", "libass")
+    switch("passC", assCflags.output.strip())
+    switch("passL", assLibs.output.strip())
+else:
+  switch("passC", &"-I./{buildPath}/include")
+  switch("passL", &"-L./{buildPath}/lib")
+  when defined(emscripten):
+    switch("define", "noSignalHandler")
+    switch("passL", "-sDEFAULT_TO_CXX")
+    switch("passC", "-pthread")
+    switch("passC", "-msimd128")
+    switch("passC", "-mfma")
+    switch("passC", "-mrelaxed-simd")
+    switch("passC", "-g0")
+    switch("passL", "-pthread")
+    switch("passL", "-g0")
+    switch("passL", "-sINITIAL_MEMORY=67108864")
+    switch("passL", "-sALLOW_MEMORY_GROWTH=1")
+    switch("passL", "-Wno-pthreads-mem-growth")
+    switch("passL", "-sSTACK_SIZE=1048576")
+    # Pre-create one worker beyond the reported core count for PROXY_TO_PTHREAD.
+    # Inference itself is capped by the app to leave one reported core for the
+    # surrounding runtime and its dedicated transcription thread.
+    switch("passL", "-sPTHREAD_POOL_SIZE=navigator.hardwareConcurrency+1")
+    when not defined(danger) and not defined(release):
+      switch("passL", "-sPTHREAD_POOL_SIZE_STRICT=2")
+    switch("passL", "-sPROXY_TO_PTHREAD=1")
+    switch("passL", "-sJSPI=1")
+    switch("passL",
+      "-sJSPI_IMPORTS=ae_wc_init,ae_wc_decode,ae_wc_command,ae_we_init,ae_we_encode,ae_we_command")
+    switch("passL", "-sEXIT_RUNTIME=1")
+    switch("passL", "-sMODULARIZE=1")
+    switch("passL", "-sEXPORT_NAME=AutoEditor")
+    switch("passL", "-sEXPORTED_RUNTIME_METHODS=[FS,ENV]")
+    switch("passL", "-sENVIRONMENT=web,worker")
+    switch("passL", "--js-library=src/webcodecs.js")
+    switch("passL", "--js-library=src/webcodecsenc.js")
+    # emscripten 6.0.2 dropped mainScriptUrlOrBlob from the default incoming
+    # API, but the site's worker loader (runner.js) sets it to spawn pthreads.
+    # `+=` is silently ineffective for this setting, so restate the full
+    # 6.0.2 default list plus mainScriptUrlOrBlob.
+    switch("passL", "-sINCOMING_MODULE_JS_API=ENVIRONMENT,arguments,canvas," &
+      "dynamicLibraries,elementPointerLock,instantiateWasm,locateFile," &
+      "monitorRunDependencies,noExitRuntime,noInitialRun,onAbort,onExit," &
+      "onRuntimeInitialized,postRun,preInit,preRun,print,printErr,setStatus," &
+      "statusMessage,stderr,stdin,stdout,thisProgram,wasm,websocket," &
+      "mainScriptUrlOrBlob")
+    switch("passL", "-lworkerfs.js")
+
+    when hostCPU == "wasm32":
+      switch("passL", "-sMAXIMUM_MEMORY=4294967296")
+    else:
+      switch("passC", "-m64")
+      switch("passL", "-m64")
+      switch("passL", "-sMAXIMUM_MEMORY=17179869184") # 16 GiB
+
+# See for details: https://simonbyrne.github.io/notes/fastmath/
+switch("passC", "-fno-signaling-nans -fno-math-errno -fno-trapping-math -fno-signed-zeros")
+when defined(gcc):
+  switch("passC", "-Wno-incompatible-pointer-types")
+  switch("passC", "-Wno-stringop-overflow")
+  switch("passL", "-Wno-stringop-overflow")
+
+if not defined(dynamic):
+  # Core FFmpeg libraries
+  when defined(macosx) or defined(windows) or
+      (defined(linux) and not defined(emscripten)):
+    switch("passL", "-lavdevice")
+  switch("passL", "-lavfilter -lavformat -lavcodec -lswresample -lswscale -lavutil")
+  # Codec libraries
+  switch("passL", "-lmp3lame -lopus -lx264 -ldav1d -lz")
+  if enableVpx:
+    switch("passL", "-lvpx")
+  if enableSvtav1 and not defined(emscripten):
+    switch("passL", "-lSvtAv1Enc")
+  if enableHevc:
+    switch("passL", "-lx265")
+  when not defined(emscripten):
+    if enableVpl and not (hostCPU == "arm64" and hostOS == "windows") and
+        not (hostCPU == "arm" and hostOS == "linux"):
+      switch("passL", "-lvpl")
+  if enableLibass:
+    # libass, for burn and text, and what it uses, after what uses them.
+    switch("define", "libass")
+    switch("passL", "-lass -lharfbuzz -lfribidi -lfreetype")
+    when defined(macosx):
+      # Core Text finds the system's fonts; iconv is macOS's own.
+      switch("passL", "-liconv -framework ApplicationServices")
+    when defined(windows):
+      # DirectWrite finds the system's fonts, with GDI's help.
+      switch("passL", "-lgdi32")
+
+when hostOS == "macosx":
+  let (osVer, osVerCode) = gorgeEx("sw_vers -productVersion", "")
+  let majorVer = osVer.strip().split(".")[0]
+  if defined(dynamic):
+    switch("passC", "-mmacosx-version-min=" & majorVer & ".0")
+    switch("passL", "-mmacosx-version-min=" & majorVer & ".0")
+  switch("passL", "-framework VideoToolbox -framework AudioToolbox")
+  switch("passL", "-framework CoreFoundation -framework CoreMedia -framework CoreAudio -framework CoreVideo")
+  when not defined(dynamic):
+    switch("passL", "-framework AVFoundation -framework Foundation -framework CoreGraphics")
+  when not defined(emscripten):
+    # Apple SpeechAnalyzer backend for `whisper <file> apple` (macOS 26+ only).
+    let osMajor = (try: parseInt(majorVer) except ValueError: 0)
+    if osVerCode == 0 and osMajor >= 26:
+      # Deployment target 14 (matching the C side) so release binaries still
+      # launch on pre-26 macOS; the shim weak-links Speech's new symbols.
+      let shim = gorgeEx("[ build/lib/libae_speech.a -nt src/ae_speech.swift ] || " &
+        "(mkdir -p build/lib && swiftc -O -parse-as-library -emit-library -static " &
+        "-target $(uname -m)-apple-macos14.0 " &
+        "-o build/lib/libae_speech.a src/ae_speech.swift)")
+      if shim.exitCode == 0:
+        switch("define", "appleSpeech")
+        switch("passL", "./build/lib/libae_speech.a")
+        switch("passL", "-L/usr/lib/swift")
+        switch("passL", "-framework Speech -framework AVFoundation -framework Foundation")
+      else:
+        echo "warning: skipping Apple speech shim: " & shim.output
+elif hostOS == "windows":
+  switch("passL", "-lpthread -lbcrypt -lsetupapi -lpsapi -lole32 -lstrmiids -luuid -loleaut32 -lshlwapi")
+elif not defined(dynamic) and hostOS == "linux" and not defined(emscripten):
+  switch("passL", "-lasound")
+  when hostCPU == "arm64":
+    switch("passL", "-L./build/lib/aarch64-linux-gnu")
+    switch("passL", "-L./build/lib64")
+  elif hostCPU == "arm":
+    switch("passL", "-L./build_armv7/lib/arm-linux-gnueabihf")
+  else:
+    switch("passL", "-L./build/lib/x86_64-linux-gnu")
+    switch("passL", "-L./build/lib64")
+
+if not defined(dynamic) and enableWhisper:
+  switch("define", "whisper")
+  switch("passL", "-lwhisper")
+  switch("passL", "-lparakeet")
+  switch("passL", "-lggml-base")
+  switch("passL", "-lggml")
+  switch("passL", "-lggml-cpu")
+  when defined(macosx):
+    switch("passL", "-lggml-blas")
+    when defined(arm64):
+      switch("passL", "-lggml-metal")
+    switch("passL", "-framework Accelerate")
+    switch("passL", "-framework Metal -framework MetalKit -framework Foundation")
+  elif hostOS != "windows" and not defined(emscripten):
+    # Windows builds use llvm-mingw (no libgomp); ggml is built with
+    # GGML_OPENMP=OFF there and uses its own threadpool.
+    switch("passL", "-lgomp")
+
+if not defined(dynamic):
+  if enableHevc or enableWhisper or defined(linux):
+    # Link the C++ standard library
+    switch("passL", when defined(macosx): "-lc++" else: "-lstdc++")
+
+  # Static linking is order-sensitive: re-add libm/libpthread at the end so
+  # codec libs (x264, vpx, FFmpeg) can resolve math/threading symbols.
+  when defined(linux) and hostCPU == "arm":
+    switch("passL", "-lm -lpthread")
+
+# begin Nimble config (version 2)
+when withDir(thisDir(), system.fileExists("nimble.paths")):
+  include "nimble.paths"
+# end Nimble config

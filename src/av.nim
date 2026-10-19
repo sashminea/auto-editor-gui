@@ -1,0 +1,804 @@
+import std/[math, strformat, strutils, sequtils, tables]
+
+import ./[ffmpeg, log]
+import ./util/[lang, rational]
+
+var useWebCodecs* = false
+
+func isIsoBmff*(formatName: string): bool =
+  "mp4" in formatName or "mov" in formatName
+
+proc `|=`*[T](a: var T, b: T) =
+  a = a or b
+
+proc supportedConfig[T](codec: ptr AVCodec,
+    config: AVCodecConfig): ptr UncheckedArray[T] =
+  var configPtr: pointer = nil
+  if avcodec_get_supported_config(nil, codec, config, 0.cuint, addr configPtr, nil) < 0:
+    return nil
+  return cast[ptr UncheckedArray[T]](configPtr)
+
+proc supportedPixFmts*(codec: ptr AVCodec): ptr UncheckedArray[AVPixelFormat] =
+  supportedConfig[AVPixelFormat](codec, AV_CODEC_CONFIG_PIX_FORMAT)
+
+proc supportedSampleFmts*(codec: ptr AVCodec): ptr UncheckedArray[AVSampleFormat] =
+  supportedConfig[AVSampleFormat](codec, AV_CODEC_CONFIG_SAMPLE_FORMAT)
+
+proc firstSupported[T](list: ptr UncheckedArray[T], fallback: T): T =
+  if list == nil or list[0].cint == -1: fallback else: list[0]
+
+proc encoderOpens*(codec: ptr AVCodec): bool =
+  ## Some encoders only reject a configuration at open time: hardware wrappers
+  ## when no device is present, WebCodecs wrappers when the browser reports the
+  ## config unsupported. Finding out costs a throwaway context.
+  var ctx = avcodec_alloc_context3(codec)
+  if ctx == nil:
+    return false
+  if codec.`type` == AVMEDIA_TYPE_VIDEO:
+    ctx.width = 1280
+    ctx.height = 720
+    ctx.bit_rate = 2_000_000
+    ctx.time_base = AVRational(num: 1, den: 25)
+    ctx.framerate = AVRational(num: 25, den: 1)
+    ctx.pix_fmt = firstSupported(codec.supportedPixFmts, AV_PIX_FMT_YUV420P)
+  else:
+    ctx.sample_rate = 48_000
+    ctx.bit_rate = 128_000
+    ctx.time_base = AVRational(num: 1, den: ctx.sample_rate)
+    av_channel_layout_default(addr ctx.ch_layout, 2)
+    ctx.sample_fmt = firstSupported(codec.supportedSampleFmts, ctx.sample_fmt)
+  result = avcodec_open2(ctx, codec, nil) >= 0
+  avcodec_free_context(addr ctx)
+
+when defined(emscripten):
+  proc findSoftwareEncoder(codec: ptr AVCodec): ptr AVCodec =
+    if codec == nil:
+      return
+    var opaque: pointer = nil
+    while true:
+      let other = av_codec_iterate(addr opaque)
+      if other == nil:
+        return
+      if other.id == codec.id and av_codec_is_encoder(other) != 0 and
+          not ($other.name).endsWith("_web"):
+        return other
+
+  proc copyEncoderContext(src: ptr AVCodecContext,
+      codec: ptr AVCodec): ptr AVCodecContext =
+    ## Copy the public encoder configuration while allocating codec-private state
+    ## for `codec`. AVCodecParameters carries format/profile/color/layout fields;
+    ## the remaining timing and encoder controls live only on AVCodecContext.
+    let par = avcodec_parameters_alloc()
+    if par == nil:
+      return nil
+    defer:
+      var ownedPar = par
+      avcodec_parameters_free(addr ownedPar)
+    if avcodec_parameters_from_context(par, src) < 0:
+      return nil
+
+    result = avcodec_alloc_context3(codec)
+    if result == nil:
+      return
+    if avcodec_parameters_to_context(result, par) < 0:
+      avcodec_free_context(addr result)
+      return nil
+
+    result.time_base = src.time_base
+    result.framerate = src.framerate
+    result.bit_rate_tolerance = src.bit_rate_tolerance
+    result.global_quality = src.global_quality
+    result.compression_level = src.compression_level
+    result.flags = src.flags
+    result.flags2 = src.flags2
+    result.gop_size = src.gop_size
+    result.max_b_frames = src.max_b_frames
+    result.thread_type = src.thread_type
+    result.thread_count = src.thread_count
+    result.strict_std_compliance = src.strict_std_compliance
+
+  proc configuredEncoderOpens(ctx: ptr AVCodecContext): bool =
+    let probe = copyEncoderContext(ctx, ctx.codec)
+    if probe == nil:
+      return false
+    result = avcodec_open2(probe, probe.codec, nil) >= 0
+    var ownedProbe = probe
+    avcodec_free_context(addr ownedProbe)
+
+proc ensureEncoderTimeBase(ctx: ptr AVCodecContext) =
+  if ctx.time_base.isValid:
+    return
+  if ctx.codec_type == AVMEDIA_TYPE_VIDEO:
+    if not ctx.framerate.isValid:
+      ctx.time_base = AVRational(num: 1, den: AV_TIME_BASE)
+    else:
+      ctx.time_base = av_inv_q(ctx.framerate)
+  elif ctx.codec_type == AVMEDIA_TYPE_AUDIO:
+    ctx.time_base = AVRational(num: 1, den: ctx.sample_rate)
+  else:
+    ctx.time_base = AVRational(num: 1, den: AV_TIME_BASE)
+
+proc resolveEncoderContext*(ctx: var ptr AVCodecContext) =
+  ## WebCodecs support depends on the complete configuration, so probe only
+  ## after callers have populated the real context. If unsupported, rebuild the
+  ## context with a software encoder before codec-private options are applied.
+  when defined(emscripten):
+    if ctx == nil or ctx.codec == nil:
+      return
+    ensureEncoderTimeBase(ctx)
+    if not ($ctx.codec.name).endsWith("_web") or configuredEncoderOpens(ctx):
+      return
+    let software = findSoftwareEncoder(ctx.codec)
+    if software == nil:
+      return
+    let replacement = copyEncoderContext(ctx, software)
+    if replacement == nil:
+      return
+    avcodec_free_context(addr ctx)
+    ctx = replacement
+
+proc initCodec*(name: string): ptr AVCodec =
+  if name == "opus":
+    return avcodec_find_encoder_by_name("libopus")
+
+  result = avcodec_find_encoder_by_name(name.cstring)
+  if result == nil:
+    let desc = avcodec_descriptor_get_by_name(name.cstring)
+    if desc != nil:
+      result = avcodec_find_encoder(desc.id)
+
+proc initEnCtx(codec: ptr AVCodec): ptr AVCodecContext =
+  let encoderCtx = avcodec_alloc_context3(codec)
+  if encoderCtx == nil:
+    error "Could not allocate encoder context"
+
+  encoderCtx.sample_fmt = firstSupported(codec.supportedSampleFmts,
+      encoderCtx.sample_fmt)
+
+  return encoderCtx
+
+proc initEncoder*(id: AVCodecID): (ptr AVCodec, ptr AVCodecContext) =
+  let codec = avcodec_find_encoder(id)
+  if codec == nil:
+    error "Encoder not found: " & $id
+  return (codec, initEnCtx(codec))
+
+proc initEncoder*(name: string): (ptr AVCodec, ptr AVCodecContext) =
+  let codec = initCodec(name)
+  if codec == nil:
+    error "Unknown encoder: " & name
+  return (codec, initEnCtx(codec))
+
+proc findSoftwareDecoder(codecId: AVCodecID): ptr AVCodec =
+  # FFmpeg's own VP8 decoder is built for WebP images, and would otherwise be
+  # found first; libvpx is the one for VP8 video, with its alpha.
+  if codecId == ID_VP8:
+    let libvpx = avcodec_find_decoder_by_name("libvpx")
+    if libvpx != nil: return libvpx
+  when defined(emscripten):
+    if codecId == ID_VP9:
+      return avcodec_find_decoder_by_name("libvpx-vp9")
+  return avcodec_find_decoder(codecId)
+
+proc findDecoder*(codecId: AVCodecID): ptr AVCodec =
+  ## The decoder `initDecoder` would open for `codecId`, or nil when this build
+  ## has none. Some codecs FFmpeg demuxes have no decoder at all: Apple's
+  ## Positional Audio Codec (the `apac` track in Spatial Audio recordings) is
+  ## demuxed and tagged, but libavcodec ships nothing that can decode it.
+  when defined(emscripten):
+    if useWebCodecs:
+      if codecId == ID_H264:
+        result = avcodec_find_decoder_by_name("h264_webcodecs")
+      elif codecId == ID_AAC:
+        result = avcodec_find_decoder_by_name("aac_webcodecs")
+      elif codecId == ID_AV1:
+        result = avcodec_find_decoder_by_name("av1_webcodecs")
+      elif codecId == ID_VP8:
+        result = avcodec_find_decoder_by_name("vp8_webcodecs")
+      elif codecId == ID_VP9:
+        result = avcodec_find_decoder_by_name("vp9_webcodecs")
+      elif codecId == ID_HEVC:
+        result = avcodec_find_decoder_by_name("hevc_webcodecs")
+  if result == nil:
+    result = findSoftwareDecoder(codecId)
+
+proc canDecode*(codecId: AVCodecID): bool =
+  findDecoder(codecId) != nil
+
+proc initDecoder*(codecpar: ptr AVCodecParameters): ptr AVCodecContext =
+  var codec = findDecoder(codecpar.codec_id)
+  if codec == nil:
+    error &"Decoder not found: {avcodec_get_name(codecpar.codec_id)}"
+
+  result = avcodec_alloc_context3(codec)
+  if result == nil:
+    error "Could not allocate decoder ctx"
+
+  result.thread_count = 0 # Auto-detect CPU cores
+  if result.codec_type == AVMEDIA_TYPE_VIDEO:
+    result.thread_type = FF_THREAD_FRAME or FF_THREAD_SLICE
+
+  let ret = avcodec_parameters_to_context(result, codecpar)
+  if ret < 0:
+    error &"Failed to copy codec parameters: {av_err2str(ret)}"
+
+  if avcodec_open2(result, codec, nil) < 0:
+    when defined(emscripten):
+      if useWebCodecs and
+          codecpar.codec_id in [ID_H264, ID_AAC, ID_AV1, ID_VP8, ID_VP9, ID_HEVC]:
+        avcodec_free_context(addr result)
+        codec = findSoftwareDecoder(codecpar.codec_id)
+        if codec != nil:
+          result = avcodec_alloc_context3(codec)
+          if result != nil:
+            result.thread_count = 0
+            if result.codec_type == AVMEDIA_TYPE_VIDEO:
+              result.thread_type = FF_THREAD_FRAME or FF_THREAD_SLICE
+            if avcodec_parameters_to_context(result, codecpar) >= 0 and
+                avcodec_open2(result, codec, nil) >= 0:
+              return
+    error "Could not open codec"
+
+type InputContainer* = object
+  formatContext*: ptr AVFormatContext
+  packet*: ptr AVPacket
+  video*: seq[ptr AVStream]
+  audio*: seq[ptr AVStream]
+  subtitle*: seq[ptr AVStream]
+
+proc openFormatCtx*(file: cstring): ptr AVFormatContext {.raises: [IOError].} =
+  var ret = avformat_open_input(addr result, file, nil, nil)
+  if ret == AVERROR(ENOENT):
+    raise newException(IOError, &"Input file doesn't exist: {file}")
+  elif ret == AVERROR_INVALIDDATA:
+    raise newException(IOError, &"Invalid media data: {file}")
+  elif ret != 0:
+    raise newException(IOError, &"[{ret}] Could not open input file: {file}")
+
+  if avformat_find_stream_info(result, nil) < 0:
+    avformat_close_input(addr result)
+    raise newException(IOError, "Could not find stream information")
+
+proc open*(filename: string): InputContainer {.raises: [IOError].} =
+  result.formatContext = openFormatCtx(filename.cstring)
+  result.packet = av_packet_alloc()
+  for i in 0 ..< result.formatContext.nb_streams:
+    let stream: ptr AVStream = result.formatContext.streams[i]
+    case stream.codecpar.codecType
+    of AVMEDIA_TYPE_VIDEO:
+      result.video.add(stream)
+    of AVMEDIA_TYPE_AUDIO:
+      result.audio.add(stream)
+    of AVMEDIA_TYPE_SUBTITLE:
+      result.subtitle.add(stream)
+    else:
+      discard
+
+func duration*(container: InputContainer): float64 =
+  if container.formatContext.duration != AV_NOPTS_VALUE:
+    return float64(container.formatContext.duration) / AV_TIME_BASE
+  return 0.0
+
+proc quarterTurns*(par: ptr AVCodecParameters): int =
+  ## How many times a player turns this video clockwise, by a quarter, to
+  ## show it upright (its display matrix; a phone video's, say). auto-editor
+  ## keeps the matrix on its output rather than turning the pixels.
+  if par == nil: return 0
+  let sd = av_packet_side_data_get(par.coded_side_data, par.nb_coded_side_data,
+    AV_PKT_DATA_DISPLAYMATRIX)
+  if sd == nil or sd.size < 36: return 0
+  # The matrix's angle is counter-clockwise.
+  let ccw = av_display_rotation_get(cast[ptr int32](sd.data))
+  if ccw != ccw: return 0 # NaN: not a rotation
+  floorMod(int(round(-ccw / 90)), 4)
+
+proc scanPackets(formatCtx: ptr AVFormatContext, stream: ptr AVStream,
+    minDuration: int64): tuple[endPts, count: int64] =
+  ## Read `stream`'s packets from where the demuxer is: the furthest packet
+  ## end (a packet lasting at least `minDuration`), and how many there were.
+  let packet = ffmpeg.av_packet_alloc()
+  defer: ffmpeg.av_packet_free(addr packet)
+  while ffmpeg.av_read_frame(formatCtx, packet) >= 0:
+    if packet.stream_index == stream.index:
+      inc result.count
+      if packet.pts != ffmpeg.AV_NOPTS_VALUE:
+        result.endPts = max(result.endPts, packet.pts + max(packet.duration, minDuration))
+    ffmpeg.av_packet_unref(packet)
+
+proc scanVideoLength*(formatCtx: ptr AVFormatContext, video: ptr AVStream): AVRational =
+  ## A video stream's length read off its packets from where the demuxer is:
+  ## the furthest packet end, or the frame count if they have no timestamps.
+  let (endPts, frames) = scanPackets(formatCtx, video, 1)
+  if endPts > 0:
+    return endPts * video.time_base
+  if frames > 0 and video.avg_frame_rate.isValid:
+    return AVRational(num: cint(frames * video.avg_frame_rate.den),
+      den: video.avg_frame_rate.num)
+  AVRational(num: 0, den: 1)
+
+proc mediaLength*(container: InputContainer): AVRational =
+  # Result is in seconds.
+  var formatCtx = container.formatContext
+  discard ffmpeg.av_seek_frame(formatCtx, -1, 0, AVSEEK_FLAG_BACKWARD)
+
+  if container.audio.len > 0:
+    let audio = container.audio[0]
+    return scanPackets(formatCtx, audio, 0).endPts * audio.time_base
+
+  if container.video.len > 0:
+    let video = container.video[0]
+    if not video.time_base.isValid:
+      return AVRational(num: 0, den: 1)
+    if video.duration != AV_NOPTS_VALUE:
+      return video.duration * video.time_base
+    # Matroska, WebP and AVIF give streams no duration of their own.
+    return scanVideoLength(formatCtx, video)
+
+  error "No audio or video stream found"
+
+proc setActiveStream*(container: InputContainer, index: cint) =
+  ## Tell the demuxer to discard packets for every stream except `index`, so
+  ## av_read_frame skips demuxing streams we don't decode (e.g. video while
+  ## analyzing audio). Call resetDiscards() when finished to restore the
+  ## container for callers that read every stream.
+  for i in 0 ..< container.formatContext.nb_streams.int:
+    let s = container.formatContext.streams[i]
+    s.discardLevel = (if s.index == index: AVDISCARD_DEFAULT else: AVDISCARD_ALL)
+
+proc resetDiscards*(container: InputContainer) =
+  for i in 0 ..< container.formatContext.nb_streams.int:
+    container.formatContext.streams[i].discardLevel = AVDISCARD_DEFAULT
+
+var decodeErrors*: int
+
+proc noteDecodeError*(msg: string) {.raises: [].} =
+  inc decodeErrors
+  if decodeErrors == 1:
+    warning &"{msg} (skipping packet; further decode errors are only counted)"
+
+iterator decode*(container: InputContainer, index: cint, codecCtx: ptr AVCodecContext,
+    frame: ptr AVFrame): ptr AVFrame =
+  var ret: cint
+  var packet = container.packet
+  # We decode a single stream to EOF here, so let the demuxer skip every other
+  # stream instead of reading packets we'd only throw away (big win when
+  # analyzing audio in a high-bitrate video file).
+  container.setActiveStream(index)
+  defer: container.resetDiscards()
+  while av_read_frame(container.formatContext, packet) >= 0:
+    defer: av_packet_unref(packet)
+
+    if packet.stream_index == index:
+      ret = avcodec_send_packet(codecCtx, packet)
+      if ret < 0 and ret != AVERROR_EAGAIN:
+        noteDecodeError &"Error sending packet to decoder: {av_err2str(ret)}"
+      else:
+        while true:
+          ret = avcodec_receive_frame(codecCtx, frame)
+          if ret == AVERROR_EAGAIN or ret == AVERROR_EOF:
+            break
+          elif ret < 0:
+            noteDecodeError &"Error receiving frame from decoder: {av_err2str(ret)}"
+            break
+
+          yield frame
+
+  discard avcodec_send_packet(codecCtx, nil)
+  while avcodec_receive_frame(codecCtx, frame) == 0:
+    yield frame
+
+iterator flushDecode*(container: InputContainer, index: cint,
+    codecCtx: ptr AVCodecContext, frame: ptr AVFrame): ptr AVFrame =
+  ## Drain-first decode loop. Always pulls all available frames out of the decoder
+  ## before sending more packets, so we never hit AVERROR(EAGAIN) on send, which would
+  ## silently drop the packet.
+  var ret: cint
+  var packet = container.packet
+  var flushed = false
+
+  while true:
+    ret = avcodec_receive_frame(codecCtx, frame)
+    if ret == 0:
+      yield frame
+      continue
+    if ret != AVERROR_EAGAIN:
+      break # AVERROR_EOF or fatal error
+
+    if flushed:
+      break
+
+    ret = av_read_frame(container.formatContext, packet)
+    if ret < 0:
+      discard avcodec_send_packet(codecCtx, nil) # signal end-of-stream
+      flushed = true
+    else:
+      if packet.stream_index == index:
+        discard avcodec_send_packet(codecCtx, packet)
+      av_packet_unref(packet)
+
+proc seek*(container: InputContainer, offset: int64, stream: ptr AVStream = nil) =
+  var flags: cint = AVSEEK_FLAG_BACKWARD
+  var streamIndex: cint = (if stream == nil: -1 else: stream.index)
+  if av_seek_frame(container.formatContext, streamIndex, offset, flags) < 0:
+    error "Error seeking frame"
+  # Callers need to call `avcodec_flush_buffers()` after.
+
+proc close*(container: InputContainer) =
+  if container.packet != nil:
+    av_packet_free(addr container.packet)
+  avformat_close_input(addr container.formatContext)
+
+type MediaCache* = ref object
+  cns*: Table[ptr string, InputContainer]
+
+proc newMediaCache*(): MediaCache =
+  new(result)
+  result.cns = initTable[ptr string, InputContainer]()
+
+proc close*(cache: MediaCache) =
+  for cn in cache.cns.values:
+    cn.close()
+  cache.cns.clear()
+
+proc getContainer*(cache: MediaCache, src: ptr string): InputContainer =
+  if src notin cache.cns:
+    cache.cns[src] = (try: open(src[]) except IOError as e: error e.msg)
+  return cache.cns[src]
+
+const MaxOutputOptions = 2 # makeMedia sets at most frag_duration and movflags.
+
+type OutputOptions* = object
+  ## Small, inline option storage used while configuring the output muxer.
+  items: array[MaxOutputOptions, tuple[key, value: string]]
+  len: int
+
+proc add*(options: var OutputOptions, key, value: string) =
+  if options.len >= options.items.len:
+    error "Too many output muxer options"
+  options.items[options.len] = (key, value)
+  inc options.len
+
+type OutputContainer* = object
+  file: string
+  streams: seq[ptr AVStream] = @[]
+  video*: seq[ptr AVStream] = @[]
+  options*: OutputOptions
+  formatCtx*: ptr AVFormatContext
+  packet: ptr AVPacket
+  started: bool = false
+  streaming*: bool = false # consumers tail/mirror the file; writes must be append-only
+
+proc openWrite*(file: string): OutputContainer =
+  let formatCtx: ptr AVFormatContext = nil
+  discard avformat_alloc_output_context2(addr formatCtx, nil, nil, file.cstring)
+  if formatCtx == nil:
+    error "Could not create output context"
+
+  # Never abandon interleaving. auto-editor feeds the muxer audio progressively
+  # further ahead of video (audio is fully buffered upfront, video lags through
+  # decode+encode), so the default 10s heuristic eventually flushes audio out of
+  # interleave order — leaving it tens of MB ahead of its video in the file. Once
+  # that happens, players seeking via the video cues land past the matching audio
+  # and never play sound. 0 forces full interleaving (buffers the ahead stream,
+  # which is the low-bitrate audio here, so memory stays small).
+  formatCtx.max_interleave_delta = 0
+
+  for i in 0 ..< formatCtx.nb_streams:
+    if formatCtx.streams[i].codecpar.codec_type == AVMEDIA_TYPE_VIDEO:
+      result.video.add formatCtx.streams[i]
+
+  result.file = file
+  result.formatCtx = formatCtx
+  result.packet = av_packet_alloc()
+
+proc addStreamFromTemplate*(self: var OutputContainer,
+    streamT: ptr AVStream): ptr AVStream =
+  let format = self.formatCtx
+
+  let ctxT = initDecoder(streamT.codecpar)
+  let codec: ptr AVCodec = ctxT.codec
+  defer: avcodec_free_context(addr ctxT)
+
+  # Assert that this format supports the requested codec.
+  if avformat_query_codec(format.oformat, codec.id, FF_COMPLIANCE_NORMAL) == 0:
+    let formatName = if format.oformat.name != nil: $format.oformat.name else: "unknown"
+    let codecName = if codec.name != nil: $codec.name else: "unknown"
+    error &"Format '{formatName}' does not support codec '{codecName}'"
+
+  let stream: ptr AVStream = avformat_new_stream(format, codec)
+  if stream == nil:
+    error "Could not allocate output stream"
+  self.streams.add stream
+  let ctx: ptr AVCodecContext = avcodec_alloc_context3(codec)
+  if ctx == nil:
+    error "Could not allocate codec context"
+  defer: avcodec_free_context(addr ctx)
+
+  # Reset the codec tag assuming we are remuxing.
+  if avcodec_parameters_to_context(ctx, streamT.codecpar) < 0:
+    error "Could not copy codec parameters"
+  ctx.codec_tag = 0
+
+  # Some formats want stream headers to be separate
+  if (format.oformat.flags and AVFMT_GLOBALHEADER) != 0:
+    ctx.flags |= AV_CODEC_FLAG_GLOBAL_HEADER
+
+  # Initialize stream codec parameters to populate the codec type. Subsequent changes to
+  # the codec context will be applied just before encoding starts in `start_encoding()`.
+  if avcodec_parameters_from_context(stream.codecpar, ctx) < 0:
+    error "Could not set ctx parameters"
+
+  return stream
+
+proc addStream*(self: var OutputContainer, codecName: string, rate: AVRational,
+    lang: Lang,
+
+width: cint = 640, height: cint = 480, layout: ref AVChannelLayout = nil): (
+        ptr AVStream, ptr AVCodecContext) =
+  let codec = initCodec(codecName)
+  if codec == nil:
+    error "Encoder not found: " & codecName
+  let format = self.formatCtx
+
+  # Assert that this format supports the requested codec.
+  if avformat_query_codec(format.oformat, codec.id, FF_COMPLIANCE_NORMAL) == 0:
+    let formatName = if format.oformat.name != nil: $format.oformat.name else: "unknown"
+    error &"Format '{formatName}' does not support codec '{codecName}'"
+
+  let stream: ptr AVStream = avformat_new_stream(format, codec)
+  if stream == nil:
+    error "Could not allocate new stream"
+  self.streams.add stream
+  let ctx: ptr AVCodecContext = avcodec_alloc_context3(codec)
+  if ctx == nil:
+    error "Could not allocate encoder context"
+
+  # Some sane video defaults
+  if codec.`type` == AVMEDIA_TYPE_VIDEO:
+    ctx.pix_fmt = AV_PIX_FMT_YUV420P
+    ctx.width = width
+    ctx.height = height
+    ctx.bit_rate = 0
+    ctx.bit_rate_tolerance = 128000
+    ctx.framerate = rate
+    ctx.time_base = av_inv_q(rate)
+    stream.avg_frame_rate = ctx.framerate
+    stream.time_base = ctx.time_base
+  # Some sane audio defaults
+  elif codec.`type` == AVMEDIA_TYPE_AUDIO:
+    ctx.sample_fmt = firstSupported(codec.supportedSampleFmts, ctx.sample_fmt)
+    ctx.bit_rate = 0
+    ctx.bit_rate_tolerance = 32000
+    ctx.sample_rate = rate.num div rate.den
+    stream.time_base = ctx.time_base
+    if layout == nil:
+      av_channel_layout_default(addr ctx.ch_layout, 2)
+    else:
+      discard av_channel_layout_copy(addr ctx.ch_layout, addr layout[])
+
+  # Some formats want stream headers to be separate
+  if (format.oformat.flags and AVFMT_GLOBALHEADER) != 0:
+    ctx.flags |= AV_CODEC_FLAG_GLOBAL_HEADER
+
+  # Initialize stream codec parameters to populate the codec type. Subsequent changes to
+  # the codec context will be applied just before encoding starts in `startEncoding()`.
+  if avcodec_parameters_from_context(stream.codecpar, ctx) < 0:
+    error "Could not set ctx parameters"
+
+  discard av_dict_set(addr stream.metadata, "language", ($lang).cstring, 0)
+  return (stream, ctx)
+
+proc startEncoding*(self: var OutputContainer) =
+  if self.started:
+    return
+
+  self.started = true
+  let outputCtx = self.formatCtx
+
+  # Open the output file, if needed.
+  if (outputCtx.oformat.flags and AVFMT_NOFILE) == 0:
+    if avio_open(addr outputCtx.pb, self.file.cstring, AVIO_FLAG_WRITE) < 0:
+      error &"Could not open output file '{self.file}'"
+    if self.streaming:
+      let pb = cast[ptr AVIOContext](outputCtx.pb)
+      pb.seekable = 0
+      pb.min_packet_size = 0
+
+  let options: ptr AVDictionary = nil
+  for i in 0..<self.options.len:
+    let option = self.options.items[i]
+    discard av_dict_set(addr options, option.key.cstring, option.value.cstring, 0)
+
+  var ret = avformat_write_header(outputCtx, addr options)
+  if ret < 0:
+    error &"Write header: {av_err2str(ret)}"
+
+  for i in 0..<self.options.len:
+    let option = self.options.items[i]
+    if av_dict_get(options, option.key.cstring, nil, 0) != nil:
+      debug &"Option wasn't used: {option.key}={option.value}"
+
+  av_dict_free(addr options)
+
+proc open*(ctx: ptr AVCodecContext) =
+  # Only for encoders
+  ensureEncoderTimeBase(ctx)
+  ctx.strict_std_compliance = FF_COMPLIANCE_EXPERIMENTAL
+  let codecName =
+    if ctx.codec != nil and ctx.codec.name != nil: $ctx.codec.name
+    else: "unknown"
+  let ret = avcodec_open2(ctx, ctx.codec, nil)
+  if ret < 0:
+    when defined(emscripten):
+      if codecName.endsWith("_web"):
+        error &"This browser cannot encode {avcodec_get_name(ctx.codec.id)}"
+    error &"Could not open encoder '{codecName}': {av_err2str(ret)}"
+
+proc setProfileOrErr*(ctx: ptr AVCodecContext, to: string) =
+  if ctx.codec == nil:
+    error "This codec does not support profiles"
+
+  let desc = avcodec_descriptor_get(ctx.codec.id)
+  if desc == nil or desc.profiles == nil:
+    error "This codec does not support profiles"
+
+  const FF_PROFILE_UNKNOWN = -99
+
+  var allProfiles: seq[string] = @[]
+  var i = 0
+  let profiles = cast[ptr UncheckedArray[AVProfile]](desc.profiles)
+  while profiles[i].profile != FF_PROFILE_UNKNOWN:
+    allProfiles.add $profiles[i].name
+    if to.toLowerAscii == ($profiles[i].name).toLowerAscii:
+      ctx.profile = profiles[i].profile
+      return
+    inc i
+
+  let allow = allProfiles.mapIt("\"" & it.toLowerAscii & "\"").join(" ")
+  let encName = $ctx.codec.name
+  error &"`{to}` is not a valid profile for encoder: {encName}\nprofiles supported: {allow}"
+
+proc mux*(self: var OutputContainer, packet: var AVPacket) =
+  self.startEncoding()
+
+  if packet.stream_index < 0 or cuint(packet.stream_index) >= self.formatCtx.nb_streams:
+    error "Bad packet stream_index"
+
+  let stream: ptr AVStream = self.streams[int(packet.stream_index)]
+
+  # Rebase packet time
+  let dst = stream.time_base
+  if not packet.time_base.isValid:
+    packet.time_base = dst
+  elif packet.time_base == dst:
+    discard
+  else:
+    av_packet_rescale_ts(addr packet, packet.time_base, dst)
+
+  # Make another reference to the packet, as `av_interleaved_write_frame()`
+  # takes ownership of the reference.
+  if av_packet_ref(self.packet, addr packet) < 0:
+    error "Failed to reference packet"
+
+  let packetStream = self.packet.stream_index
+  let packetPts = self.packet.pts
+  let packetDts = self.packet.dts
+  let packetDuration = self.packet.duration
+  let ret = av_interleaved_write_frame(self.formatCtx, self.packet)
+  if ret < 0:
+    error &"Could not write packet: {av_err2str(ret)} " &
+      &"(stream {packetStream}, pts {packetPts}, dts {packetDts}, " &
+      &"duration {packetDuration}, timebase {dst.num}/{dst.den})"
+
+iterator encode*(encoderCtx: ptr AVCodecContext, frame: ptr AVFrame,
+    packet: ptr AVPacket): ptr AVPacket =
+  let isFlush: bool = frame == nil
+
+  var ret = avcodec_send_frame(encoderCtx, frame)
+  if ret < 0:
+    error &"Error sending frame to encoder: {ret}"
+
+  while true:
+    let receiveRet = avcodec_receive_packet(encoderCtx, packet)
+    if receiveRet == AVERROR_EAGAIN or receiveRet == AVERROR_EOF:
+      break
+    elif receiveRet < 0:
+      if isFlush:
+        break
+      else:
+        error "Error receiving packet from encoder"
+
+    yield packet # Nim requres iterator yield values
+
+proc close*(outputCtx: ptr AVFormatContext) =
+  let ret = av_write_trailer(outputCtx)
+  if ret < 0:
+    error &"Could not finalize output (disk full?): {av_err2str(ret)}"
+
+  if (outputCtx.oformat.flags and AVFMT_NOFILE) == 0:
+    discard avio_closep(addr outputCtx.pb)
+  avformat_free_context(outputCtx)
+
+proc close*(self: OutputContainer) =
+  if self.packet != nil:
+    av_packet_free(addr self.packet)
+  close(self.formatCtx)
+
+proc abandon*(self: OutputContainer) =
+  ## Free a container that was never started, writing nothing.
+  if self.packet != nil:
+    av_packet_free(addr self.packet)
+  avformat_free_context(self.formatCtx)
+
+
+proc name*(stream: ptr AVStream): string =
+  ## The decoder that would decode `stream`, as findDecoder picks it.
+  if stream == nil or stream.codecpar == nil:
+    return ""
+
+  let codec = findDecoder(stream.codecpar.codec_id)
+  if codec != nil and codec.name != nil:
+    return $codec.name
+
+  return ""
+
+proc initLayout*(layout: string): ref AVChannelLayout =
+  if layout == "":
+    error "Invalid layout"
+  new(result)
+  if av_channel_layout_from_string(addr result[], layout.cstring) < 0:
+    error "Invalid layout"
+
+func canonicalName*(codec: ptr AVCodec): string =
+  return $avcodec_get_name(codec.id)
+
+func bestPts*(frame: ptr AVFrame): int64 =
+  ## Frame pts, or the dts-derived best_effort_timestamp that pts-less
+  ## containers (AVI) carry instead. AV_NOPTS_VALUE if neither is set;
+  ## frames we build ourselves only set pts.
+  if frame.pts != AV_NOPTS_VALUE: frame.pts
+  else: frame.best_effort_timestamp
+
+func time*(frame: ptr AVFrame, tb: AVRational): float64 =
+  # `tb` should be AVStream.time_base.
+  let ts = bestPts(frame)
+  if ts == AV_NOPTS_VALUE:
+    return -1.0
+  return float(ts) * float(tb.num) / float(tb.den)
+
+func dialogue*(assText: string): string =
+  let textLen = assText.len
+  var
+    i: int64 = 0
+    curChar: char
+    nextChar: char
+    commaCount: int8 = 0
+    state = false
+
+  while commaCount < 8 and i < textLen:
+    if assText[i] == ',':
+      commaCount += 1
+    i += 1
+
+  while i < textLen:
+    curChar = assText[i]
+    nextChar = (if i + 1 >= textLen: '\0' else: assText[i + 1])
+
+    if not state:
+      if curChar == '\\' and nextChar == 'N':
+        # `\N` is a hard line break.
+        result &= "\n"
+        i += 2
+        continue
+      if curChar == '\\' and nextChar in {'n', 'h'}:
+        # `\n` (soft break) and `\h` (non-breaking space) collapse to a space.
+        result &= " "
+        i += 2
+        continue
+      if curChar == '{' and assText.find('}', int(i) + 1) != -1:
+        state = true
+      else:
+        result &= curChar
+    elif curChar == '}':
+      state = false
+    i += 1

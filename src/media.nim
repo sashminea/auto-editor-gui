@@ -1,0 +1,206 @@
+import std/math
+
+import ./[av, ffmpeg, log]
+import ./util/[lang, rational]
+
+type
+  VideoStream* = object
+    timecode*: string
+    duration*: float64
+    bitrate*: int64
+    avg_rate*: AVRational
+    timebase*: AVRational
+    sar*: AVRational
+    pix_fmt*: AVPixelFormat
+    codecId*: AVCodecID
+    lang*: Lang
+    width*: int32
+    height*: int32
+    color_range*: cint
+    color_space*: cint
+    color_primaries*: cint
+    color_transfer*: cint
+
+  AudioStream* = object
+    layout*: string
+    duration*: float64
+    bitrate*: int64
+    codecId*: AVCodecID
+    lang*: Lang
+    sampleRate*: cint
+    channels*: cint
+
+  SubtitleStream* = object
+    duration*: float64
+    codecId*: AVCodecID
+    lang*: Lang
+
+  DataStream* = object
+    timecode*: string
+    codecId*: AVCodecID
+    tag*: cuint
+
+  MediaInfo* = object
+    path*: string
+    duration*: float64
+    bitrate*: int64
+    v*: seq[VideoStream]
+    a*: seq[AudioStream]
+    s*: seq[SubtitleStream]
+    d*: seq[DataStream]
+    i*: seq[VideoStream]
+
+
+func getRes*(self: MediaInfo): (int32, int32) {.raises: [].} =
+  if self.v.len > 0:
+    (self.v[0].width, self.v[0].height)
+  else:
+    (1920, 1080)
+
+proc initMediaInfo*(formatContext: ptr AVFormatContext, path: string): MediaInfo =
+  result.path = path
+  result.bitrate = formatContext.bit_rate
+  if formatContext.duration != AV_NOPTS_VALUE:
+    result.duration = float64(formatContext.duration) / AV_TIME_BASE
+  else:
+    result.duration = 0.0
+
+  for i in 0 ..< formatContext.nb_streams.int:
+    let stream = formatContext.streams[i]
+    let codecParameters = stream.codecpar
+    var codecCtx = avcodec_alloc_context3(nil)
+    if codecCtx == nil:
+      error "Could not allocate codec context"
+    defer: avcodec_free_context(addr codecCtx)
+    if avcodec_parameters_to_context(codecCtx, codecParameters) < 0:
+      error "Could not copy codec parameters for stream " & $i
+
+    let metadata = cast[ptr AVDictionary](stream.metadata)
+    let entry = av_dict_get(metadata, "language", nil, 0)
+
+    var lang: Lang
+    if entry == nil:
+      lang = ['u', 'n', 'd', '\0']
+    else:
+      for i in 0 ..< min(entry.value.len, 4):
+        lang[i] = entry.value[i]
+
+    var duration: float64
+    if stream.duration == AV_NOPTS_VALUE:
+      duration = 0.0
+    else:
+      duration = stream.duration.float64 * av_q2d(stream.time_base)
+
+    if codecParameters.codec_type == AVMEDIA_TYPE_VIDEO:
+      let timecodeEntry = av_dict_get(metadata, "timecode", nil, 0)
+      let timecodeStr = (if timecodeEntry == nil: "" else: $timecodeEntry.value)
+
+      # The container's SAR, else the bitstream's, as ffprobe reports.
+      let guessed = av_guess_sample_aspect_ratio(formatContext, stream, nil)
+      let sar = if not guessed.isValid: AVRational(num: 1, den: 1) else: guessed
+
+      let newStream = VideoStream(
+        duration: duration,
+        bitrate: codecCtx.bit_rate,
+        avg_rate: stream.avg_frame_rate,
+        codecId: codecCtx.codec_id,
+        timecode: timecodeStr,
+        lang: lang,
+        timebase: stream.time_base,
+        sar: sar,
+        pix_fmt: codecCtx.pix_fmt,
+        width: codecCtx.width,
+        height: codecCtx.height,
+        color_range: codecCtx.color_range,
+        color_space: codecCtx.colorspace,
+        color_primaries: codecCtx.color_primaries,
+        color_transfer: codecCtx.color_trc,
+      )
+      if (stream.disposition and AV_DISPOSITION_ATTACHED_PIC) != 0:
+        result.i.add newStream
+      else:
+        result.v.add newStream
+
+    elif codecParameters.codec_type == AVMEDIA_TYPE_AUDIO:
+      var layout: array[64, char]
+      discard av_channel_layout_describe(addr codecCtx.ch_layout, cast[
+          cstring](addr layout[0]), sizeof(layout).csize_t)
+
+      result.a.add(AudioStream(
+        duration: duration,
+        bitrate: codecCtx.bit_rate,
+        codecId: codecCtx.codec_id,
+        lang: lang,
+        layout: $cast[cstring](addr layout[0]),
+        sampleRate: codecCtx.sample_rate,
+        channels: codecParameters.ch_layout.nb_channels,
+      ))
+    elif codecParameters.codec_type == AVMEDIA_TYPE_SUBTITLE:
+      result.s.add(
+        SubtitleStream(duration: duration, codecId: codecCtx.codec_id, lang: lang)
+      )
+    elif codecParameters.codec_type == AVMEDIA_TYPE_DATA:
+      let timecodeEntry = av_dict_get(metadata, "timecode", nil, 0)
+      let timecodeStr = (if timecodeEntry == nil: "" else: $timecodeEntry.value)
+      result.d.add(
+        DataStream(codecId: codecCtx.codec_id, tag: codecCtx.codec_tag,
+            timecode: timecodeStr)
+      )
+
+  # Some demuxers don't know a video-only file's length up front (WebP, AVIF):
+  # read it off the packets, then rewind for whoever reads the file next.
+  if result.duration <= 0 and result.v.len > 0 and result.a.len == 0:
+    for i in 0 ..< formatContext.nb_streams.int:
+      let stream = formatContext.streams[i]
+      if stream.codecpar.codec_type == AVMEDIA_TYPE_VIDEO:
+        discard av_seek_frame(formatContext, -1, 0, AVSEEK_FLAG_BACKWARD)
+        result.duration = scanVideoLength(formatContext, stream).float64
+        discard av_seek_frame(formatContext, -1, 0, AVSEEK_FLAG_BACKWARD)
+        if result.v[0].duration <= 0: result.v[0].duration = result.duration
+        break
+
+proc initMediaInfo*(path: string): MediaInfo =
+  let formatCtx = (try: av.openFormatCtx(path) except IOError as e: error e.msg)
+  result = initMediaInfo(formatCtx, path)
+  avformat_close_input(addr formatCtx)
+
+func makeSaneTimebase*(tb: AVRational): AVRational {.raises: [].} =
+  # A 0/0 rate (no declared fps) is NaN as a float; av_d2q(NaN) is degenerate.
+  if not tb.isValid:
+    return AVRational(num: 30, den: 1)
+  let tbFloat = round(tb.float64, 2)
+
+  let ntsc60 = AVRational(num: 60000, den: 1001)
+  let ntsc = AVRational(num: 30000, den: 1001)
+  let filmNtsc = AVRational(num: 24000, den: 1001)
+
+  if tbFloat == round(ntsc60.float64, 2):
+    return ntsc60
+  if tbFloat == round(ntsc.float64, 2):
+    return ntsc
+  if tbFloat == round(filmNtsc.float64, 2):
+    return filmNtsc
+  return av_d2q(tbFloat, 1000000)
+
+func isStill*(mi: MediaInfo): bool {.raises: [].} =
+  ## A video source of at most one frame: an image. Counted at the source's
+  ## own rate, since a still's one frame (1/25 s, as image demuxers give it)
+  ## is two or more on a timeline above 37.5 fps.
+  if mi.v.len == 0: return false
+  let rate = if mi.v[0].avg_rate.isValid: mi.v[0].avg_rate.float64 else: 25.0
+  round(mi.duration * rate) <= 1
+
+func recommendedTimebase*(mi: MediaInfo): AVRational {.raises: [].} =
+  ## The timebase auto-editor edits the file in when none is asked for: its
+  ## first video's frame rate, made sane, else 30/1.
+  if mi.v.len > 0: makeSaneTimebase(mi.v[0].avg_rate)
+  else: AVRational(num: 30, den: 1)
+
+proc codecName*(id: AVCodecID): string = $avcodec_get_name(id)
+
+proc mediaFrames*(path: string, tb: AVRational): int =
+  ## How many frames auto-editor gives `path` on a timeline at `tb`: the
+  ## audio's last packet, else the video's duration.
+  var container = (try: av.open(path) except IOError as e: error e.msg)
+  defer: container.close()
+  int(round((mediaLength(container) * tb).float64))

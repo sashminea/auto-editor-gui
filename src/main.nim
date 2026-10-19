@@ -1,0 +1,713 @@
+import std/[options, os, parseutils, sequtils, strformat, strutils]
+when not defined(emscripten):
+  import std/osproc
+  import ./media
+  when defined(macosx) or defined(windows) or defined(linux):
+    import std/tempfiles
+    import ./[mic, wavutil]
+  import cmds/completion
+
+when not defined(windows) and not defined(emscripten):
+  import std/posix_utils
+
+import ./[about, action, cli, conductor, edit, ffmpeg, license, log]
+import render/burnsubs
+import ./lib/escape
+when defined(emscripten):
+  import ./av
+import cmds/[info, desc, cache, levels, subdump, waveform, whisper]
+import util/[color, fun, term, rational]
+
+import vendor/tinyre/tinyre
+
+var micCaptureActive = false
+var stopMicCapture = false
+
+proc ctrlc() {.noconv.} =
+  if micCaptureActive:
+    stopMicCapture = true
+  else:
+    fatal "Keyboard Interrupt"
+
+setControlCHook(ctrlc)
+
+when defined(debug) and not defined(emscripten) and not defined(windows):
+  import std/[posix, strutils]
+  proc sigsegvHandler(sig: cint) {.noconv.} =
+    writeStackTrace()
+    exitnow(1)
+  discard signal(SIGSEGV, sigsegvHandler)
+
+
+proc printHelp() {.noreturn.} =
+  let termWidth = max(terminalWidth(), 40)
+  let optWidth = clamp(termWidth div 3, 15, 32)
+  let helpWidth = termWidth - optWidth - 4
+
+  echo "Usage: [file | url ... | :mic] [options]\n"
+  echo "Commands:"
+  echo "  " & commands.mapIt(it.name).join(" ") & "\n"
+  echo "Options:"
+
+  var currentCat: Categories = cEdit
+  var first = true
+
+  for opt in mainOptions:
+    if opt.hidden:
+      continue
+
+    if opt.c != currentCat or first:
+      currentCat = opt.c
+      if first:
+        first = false
+      else:
+        echo ""
+      echo "  " & categoryName(currentCat) & ":"
+
+    var optStr = "    " & opt.names
+    if opt.metavar != "":
+      optStr &= " " & opt.metavar
+
+    if optStr.len >= optWidth:
+      echo optStr
+      let wrapped = wrapText(opt.help, helpWidth, 0)
+      for line in wrapped.split("\n"):
+        echo " ".repeat(optWidth) & line
+    else:
+      let padding = optWidth - optStr.len
+      let wrapped = wrapText(opt.help, helpWidth, optWidth)
+      let helpLines = wrapped.split("\n")
+      echo optStr & " ".repeat(padding) & helpLines[0]
+      for i in 1 ..< helpLines.len:
+        echo helpLines[i]
+
+  echo "\n    -h, --help" & " ".repeat(optWidth - 14) &
+    wrapText("Show info about this program then exit", helpWidth, optWidth)
+  echo ""
+  quit(0)
+
+proc parseTwoLengths(val, opt: string): (PackedInt, PackedInt) =
+  var vals = val.strip().split(",")
+  if vals.len == 1:
+    vals.add vals[0]
+  if vals.len != 2:
+    error &"--{opt} has too many arguments."
+  if "end" in vals:
+    error "Invalid number: 'end'"
+  if "start" in vals:
+    error "Invalid number: 'start'"
+  return (parseTime(vals[0]), parseTime(vals[1]))
+
+proc parseTransition(val: string): (PackedInt, PackedInt) =
+  result[1] = pack(true, 1000) # default minimum cut: one second
+  let parts = val.split(':')
+  if parts.len notin [2, 3] or parts[0] != "dissolve":
+    error "--transition expects dissolve:DURATION[:MIN-CUT]"
+  result[0] = parseTimeSimple(parts[1])
+  if result[0].getNumber <= 0:
+    error "--transition duration must be greater than zero"
+  if parts.len == 3:
+    result[1] = parseTimeSimple(parts[2])
+    if result[1].getNumber < 0:
+      error "--transition minimum cut duration cannot be negative"
+
+proc parseTimeRange(val, opt: string): (PackedInt, PackedInt) =
+  var vals = val.strip().split(",")
+  if vals.len < 2:
+    error &"--{opt} has too few arguments"
+  if vals.len > 2:
+    error &"--{opt} has too many arguments"
+  return (parseTime(vals[0]), parseTime(vals[1]))
+
+proc parseNum(val, opt: string): float64 =
+  let (num, unit) = splitNumStr(val)
+  if unit == "%":
+    result = num / 100.0
+  elif unit == "":
+    result = num
+  else:
+    error &"--{opt} has unknown unit: {unit}"
+
+proc parseResolution(val, opt: string): (int32, int32) =
+  let vals = val.strip().split(",")
+  if len(vals) != 2:
+    error &"'{val}': --{opt} takes two numbers"
+
+  var a, b: int
+  let s0 = vals[0].strip()
+  let s1 = vals[1].strip()
+  if parseSaturatedNatural(s0, a) != s0.len or parseSaturatedNatural(s1, b) != s1.len:
+    error &"'{val}': --{opt} takes two numbers"
+  if a < 2 or b < 2 or ((a or b) and 1) != 0:
+    error &"--{opt} must be even and >= 2"
+  if a > high(int32) or b > high(int32):
+    error &"--{opt} got an invalid/too high number"
+  return (a.int32, b.int32)
+
+proc parseSampleRate(val: string): cint =
+  let (num, unit) = splitNumStr(val)
+  if unit == "kHz" or unit == "KHz":
+    result = cint(num * 1000)
+  elif unit notin ["", "Hz"]:
+    error &"Unknown unit: '{unit}'"
+  else:
+    result = cint(num)
+  if result < 1:
+    error "Samplerate must be positive"
+
+proc parseFrameRate(val: string): AVRational =
+  case val
+  of "ntsc": return AVRational(num: 30000, den: 1001)
+  of "ntsc_film": return AVRational(num: 24000, den: 1001)
+  of "pal": return AVRational(num: 25, den: 1)
+  of "film": return AVRational(num: 24, den: 1)
+  else: discard
+
+  result = (try: toAVRational(val) except ValueError as e: error e.msg)
+  if result == AVRational(num: 2997, den: 100):
+    warning "29.97 is not the NTSC rate; use `-r ntsc` for 30000/1001"
+  elif result == AVRational(num: 2997, den: 125) or
+      result == AVRational(num: 1199, den: 50):
+    warning &"{val} is not the NTSC film rate; use `-r ntsc_film` for 24000/1001"
+  elif result == AVRational(num: 2997, den: 50):
+    warning "59.94 is not the NTSC rate; use `-r 60000/1001`"
+
+when not defined(emscripten):
+  proc wantStreams(args: mainArgs): (bool, bool) =
+    ## Decide whether the video and/or audio streams are worth downloading,
+    ## based on what the output format holds and what --edit needs to analyze.
+    var (editV, editA) = args.edit.needs
+    for le in args.labeledEdits: # union the needs of every --edit:N method
+      let (v, a) = le.expr.needs
+      editV = editV or v
+      editA = editA or a
+
+    var outV = true
+    var outA = true
+    if args.preview:
+      (outV, outA) = (false, false) # --stats/--preview writes no output file.
+    elif args.output notin ["", "-"]:
+      let fmt = av_guess_format(nil, cstring(args.output), nil)
+      if fmt != nil:
+        outV = not args.vn and fmt.video_codec notin [ID_NONE, ID_PNG]
+        outA = not args.an and fmt.audio_codec != ID_NONE
+
+    result = (outV or editV, outA or editA)
+    if result == (false, false):
+      result[1] = true # Always fetch something to read media duration from.
+
+  proc downloadVideo(myInput: string, args: mainArgs): string =
+    let (wantVideo, wantAudio) = wantStreams(args)
+    conwrite(if wantVideo: "Downloading video..." else: "Downloading audio...")
+
+    let maxHeight = args.resolution[1]
+    var downloadFormat = ""
+    let vid = (if maxHeight != 0: &"bestvideo[height<={maxHeight}]" else: "bestvideo")
+    if wantVideo and wantAudio:
+      downloadFormat = vid & "+bestaudio"
+    elif wantVideo:
+      downloadFormat = vid
+    else:
+      downloadFormat = "bestaudio"
+
+    var outputFormat: string
+    if args.outputFormat != "":
+      outputFormat = args.outputFormat
+    else:
+      let (dir, name, _) = agSplitFile(myInput)
+      outputFormat = replace(dir & "/" & name, re"\W+", "-") & ".%(ext)s"
+
+    var cmd: seq[string] = @[]
+    if downloadFormat != "":
+      cmd.add(@["-f", downloadFormat])
+
+    cmd.add(@["-o", outputFormat, myInput])
+    if args.ytDlpExtras != "":
+      cmd.add(args.ytDlpExtras.split(" "))
+
+    let ytDlpPath = args.ytDlpLocation
+    var location: string
+    try:
+      location = execProcess(ytDlpPath,
+        args = @["--get-filename", "--no-warnings"] & cmd,
+        options = {poUsePath}).strip()
+    except OSError:
+      error "Program `yt-dlp` must be installed and on PATH."
+
+    # Only reuse an existing download if it already has the streams we need.
+    var reusable = false
+    if fileExists(location):
+      try:
+        let mi = initMediaInfo(location)
+        reusable = (not wantAudio or mi.a.len > 0) and
+                   (not wantVideo or mi.v.len > 0)
+      except IOError:
+        discard
+
+    if not reusable:
+      if fileExists(location):
+        try: removeFile(location)
+        except OSError: error &"Couldn't remove old download: {location}"
+
+      let p = startProcess(ytDlpPath, args = cmd, options = {poUsePath,
+          poParentStreams})
+      defer: p.close()
+      discard p.waitForExit()
+
+    if not fileExists(location):
+      error &"Download file wasn't created: {location}"
+
+    return location
+
+proc listAvailableFilters(): string =
+  result = "Filters:"
+  var opaque: pointer = nil
+  var filter: ptr AVFilter = av_filter_iterate(addr opaque)
+
+  while filter != nil:
+    if filter.name != nil:
+      result &= &" {filter.name}"
+    filter = av_filter_iterate(addr opaque)
+
+proc parseActions(val: string): Actions =
+  try:
+    return action.parseActions(val)
+  except ActionParseError as e:
+    error e.msg
+
+proc parseAddBool(val: string): bool =
+  case val
+  of "true", "#t", "1": true
+  of "false", "#f", "0": false
+  else: error "add: follow-base expects true or false, got: " & val
+
+proc extractAdds(val: string, selector, setActionRef: int, args: var mainArgs): string =
+  ## Pull `add:` tokens out of an action value and record them on `args.adds`;
+  ## return the remaining action string (atf-8 effects) for the base layer.
+  ## `add` is a virtual action, removed before the rest is parsed. Actions chained
+  ## after an `add:` token apply to that overlay layer, not the base; actions
+  ## before the first `add:` stay base-layer effects. Each `add:` is one
+  ## comma-field (colon-separated). Forms: `add:path` (fit-and-center) or
+  ## `add:path:x:y:scale` (placed via a `pos` action). Placement is detected by
+  ## the trailing three fields parsing as `x` (int), `y` (int), `scale` (float);
+  ## everything before them is the path. This keeps Windows paths working (the
+  ## drive-letter colon in `C:\dir\img.png` is part of the path), with or without
+  ## placement. A trailing `follow-base=<bool>` option may follow either form.
+  var keep: seq[string]
+  var curAdd = -1 # index in args.adds that trailing actions attach to; -1 = base
+  for field in splitUnescaped(val, ',', textOnly = true):
+    let f = field.strip()
+    if f.startsWith("add:"):
+      let rest = f[4 .. ^1]
+      var segs = rest.split(":")
+      var spec = AddSpec(selector: selector, setActionRef: setActionRef)
+      # Pull trailing `key=value` options (e.g. follow-base=0) off the end before
+      # placement detection, leaving the remaining segments as PATH[:x:y:scale].
+      while segs.len > 1:
+        let last = segs[^1].strip()
+        let eq = last.find('=')
+        if eq <= 0 or last[0 ..< eq] != "follow-base":
+          break
+        spec.followBase = parseAddBool(last[eq + 1 .. ^1].strip())
+        segs.setLen(segs.len - 1)
+      # Need at least one path field plus x:y:scale to be a placement. Each of the
+      # three may be a ramp (e.g. 0..600); detected by all parsing as keyframes, so
+      # everything before them is the path (a Windows drive-letter colon stays put).
+      var hasPlacement = false
+      if segs.len >= 4:
+        try:
+          spec.xKf = parseKeyframes(segs[^3].strip())
+          spec.yKf = parseKeyframes(segs[^2].strip())
+          spec.scaleKf = parseKeyframes(segs[^1].strip())
+          hasPlacement = true
+        except ActionParseError:
+          hasPlacement = false # trailing fields aren't numeric => part of path
+      if hasPlacement:
+        spec.hasPos = true
+        spec.path = segs[0 ..< segs.len - 3].join(":")
+        for s in spec.scaleKf:
+          if s <= 0.0'f32:
+            error "add: scale must be greater than 0.0"
+      else:
+        spec.path = segs.join(":")
+      # `add:confetti...`/`add:drawbox...` name a generator, not a file: the
+      # layer is painted, not decoded.
+      if spec.path.split(':')[0] in generatorActions:
+        spec.generator = spec.path
+        spec.path = ""
+      elif spec.path.len == 0:
+        error "add: missing path"
+      args.adds.add spec
+      curAdd = args.adds.len - 1
+    elif curAdd == -1:
+      keep.add field
+    else:
+      # Chain onto the overlay layer of the most recent `add:`.
+      if args.adds[curAdd].effects.len > 0:
+        args.adds[curAdd].effects.add ","
+      args.adds[curAdd].effects.add f
+  keep.join(",")
+
+proc parseSpeed(val, opt: string): float64 =
+  result = parseNum(val, opt)
+  if result <= 0.0 or result > 99999.0:
+    result = 99999.0
+
+proc actionFromUserSpeed(val: float64): Actions =
+  if val == 1.0: aNil
+  elif val <= 0.0 or val >= 99999.0: aCut
+  else: newActions([Action(kind: actSpeed, val: val)])
+
+proc parseSpeedRange(val: string): (Actions, PackedInt, PackedInt) =
+  let vals = val.strip().split(",")
+  if vals.len < 3:
+    error "--set-speed has too few arguments"
+  if vals.len > 3:
+    error "--set-speed has too many arguments"
+
+  let speed = parseSpeed(vals[0], "set-speed")
+  let action = actionFromUserSpeed(speed)
+  return (action, parseTime(vals[1]), parseTime(vals[2]))
+
+proc parseActionAndRange(
+    val: string, args: var mainArgs): (Actions, PackedInt, PackedInt) =
+  let parts = splitUnescaped(val.strip(), ',', textOnly = true)
+  if parts.len < 3:
+    error "--set-action has too few arguments"
+  let actionStr = parts[0 ..< parts.len - 2].join(",")
+  let startTime = parseTime(parts[^2])
+  let endTime = parseTime(parts[^1])
+  # `add` works here too: link it to this set-action's range (its index is the
+  # length now, since the caller appends the returned tuple next).
+  let rest = extractAdds(actionStr, -1, args.setAction.len, args).strip()
+  let acts = (if rest == "": aNil else: parseActions(rest))
+  return (acts, startTime, endTime)
+
+proc parseLabeledFlag(key: string): tuple[matched: bool, kind: CliOption, label: int] =
+  ## Detect the generic `:<n>` label suffix on `--edit`/`-e` and `--when`/`-w`.
+  ## Returns kind "edit" (label 1..255) or "when" (label 0..255). The suffix must
+  ## be a bare integer in range; `--edit:0` is rejected (label 0 is silent-only).
+  let ci = key.find(':')
+  if ci == -1:
+    return (false, coNone, 0)
+  let kind =
+    case key[0 ..< ci]
+    of "-e", "--edit": coEdit
+    of "-w", "--when": coWhen
+    else: return (false, coNone, 0)
+  let suffix = key[ci + 1 .. ^1]
+  var n: int
+  let parsedLen = (try: parseInt(suffix, n) except ValueError: 0)
+  if suffix.len == 0 or parsedLen != suffix.len:
+    error &"Invalid label in {key}: expected an integer after ':'"
+  if kind == coEdit and n == 0:
+    error "--edit:0 is invalid (label 0 is reserved for silent; use --when:0 to act on silent sections)"
+  if n < 0 or n > 255:
+    error &"Label out of range [0, 255] in {key}"
+  return (true, kind, n)
+
+proc setLabeledWhen(args: var mainArgs, label: int, action: Actions) =
+  for w in args.labeledWhens.mitems:
+    if w.label == label:
+      w.action.free()
+      w.action = action
+      return
+  args.labeledWhens.add (label: label, action: action)
+
+proc replaceAction(dest: var Actions, replacement: Actions) =
+  dest.free()
+  dest = replacement
+
+proc setLabeledEdit(args: var mainArgs, label: int, expr: EditExpr) =
+  for e in args.labeledEdits.mitems:
+    if e.label == label:
+      e.expr = expr
+      return
+  args.labeledEdits.add (label: label, expr: expr)
+
+const mainArgumentOptions = {
+  coEdit, coWhenActive, coWhenInactive, coMargin, coSmooth, coTransition,
+  coOutput, coCutOut, coAddIn, coSetSpeed, coSetAction, coSilentSpeed,
+  coVideoSpeed, coExport, coFrameRate, coSampleRate, coResolution, coBackground,
+  coYtDlpLocation, coOutputFormat, coYtDlpExtras, coProgress, coVcodec,
+  coVideoBitrate, coCrf, coGop, coVprofile, coPreset, coPixFmt, coScale, coFont, coAcodec,
+  coLayout, coAudioBitrate, coAudioNormalize, coKey, coWhen,
+}
+
+assertArgumentOptions(mainOptions, mainArgumentOptions, {coWhen})
+
+proc main() =
+  if paramCount() < 1:
+    if stdin.isatty():
+      echo """Auto-Editor is an automatic video/audio creator and editor. By default, it
+will detect silence and create a new video with those sections cut out. By
+changing some of the options, you can export to a traditional editor like
+Premiere Pro and adjust the edits there, adjust the pacing of the cuts, and
+change the method of editing like using audio loudness and video motion to
+judge making cuts.
+"""
+      quit(0)
+  else:
+    genCmdCases(paramStr(1))
+
+  var args = mainArgs()
+  var video = VideoSettings()
+  var audio = AudioSettings()
+  var showVersion: bool = false
+  var expecting = coNone
+  # Label for a pending "edit"/"when" value (plain --edit => 1).
+  var expectingLabel: int = 1
+  var parseOptions = true
+  var positionalStart = int.high # index of first input after `--`
+
+  func isKnownOption(key: string): bool =
+    for opt in mainOptions:
+      for name in opt.names.split(", "):
+        if key == name.strip():
+          return true
+    false
+
+  let cmdLineParams = commandLineParams()
+  for key in cmdLineParams:
+    if parseOptions and expecting == coNone and key == "--":
+      parseOptions = false
+      positionalStart = args.inputs.len
+      continue
+    if expecting == coNone:
+      # Generic `--edit:N` / `-e:N` / `--when:N` / `-w:N`. Plain `--edit` and the
+      # named `--when-*` aliases have no `:` suffix, so they fall through to
+      # genCliMacro below (which sets the corresponding `expecting` enum).
+      if parseOptions:
+        let lf = parseLabeledFlag(key)
+        if lf.matched:
+          expecting = lf.kind
+          expectingLabel = lf.label
+          continue
+        if genCliMacro(key, args, mainOptions):
+          continue
+        if key in ["-h", "--help"]:
+          printHelp()
+        if key.startsWith("--"):
+          error &"Unknown option: {key}{optionDidYouMean(key, mainOptions)}"
+    elif key in ["-h", "--help"]:
+      printHelp()
+    elif key.startsWith("--") or isKnownOption(key) or
+        parseLabeledFlag(key).matched:
+      error &"--{expecting} needs argument, got option: {key}"
+    case expecting
+    of coNone:
+      args.inputs.add key
+    of coEdit:
+      if expectingLabel == 1:
+        args.edit = parseEdit(key)
+      else:
+        setLabeledEdit(args, expectingLabel, parseEdit(key))
+    of coExport:
+      args.`export` = parseExportString(key)
+    of coOutput:
+      args.output = key
+    of coWhen:
+      # Generic `--when:N` / `-w:N`. Labels 0 and 1 share storage with the named
+      let rest = extractAdds(key, expectingLabel, -1, args)
+      if rest.strip() != "":
+        case expectingLabel
+        of 0: replaceAction(args.whenInactive, parseActions(rest))
+        of 1: replaceAction(args.whenActive, parseActions(rest))
+        else: setLabeledWhen(args, expectingLabel, parseActions(rest))
+    of coWhenInactive:
+      let rest = extractAdds(key, 0, -1, args)
+      if rest.strip() != "":
+        replaceAction(args.whenInactive, parseActions(rest))
+    of coWhenActive:
+      let rest = extractAdds(key, 1, -1, args)
+      if rest.strip() != "":
+        replaceAction(args.whenActive, parseActions(rest))
+    of coSilentSpeed:
+      replaceAction(args.whenInactive,
+        actionFromUserSpeed(parseSpeed(key, $expecting)))
+    of coVideoSpeed:
+      replaceAction(args.whenActive,
+        actionFromUserSpeed(parseSpeed(key, $expecting)))
+    of coAddIn:
+      block:
+        let span = parseTimeRange(key, $expecting)
+        args.setAction.add (aNil, span[0], span[1])
+    of coCutOut:
+      block:
+        let span = parseTimeRange(key, $expecting)
+        args.setAction.add (aCut, span[0], span[1])
+    of coSetSpeed:
+      args.setAction.add parseSpeedRange(key)
+    of coSetAction:
+      args.setAction.add parseActionAndRange(key, args)
+    of coYtDlpLocation:
+      args.ytDlpLocation = key
+    of coOutputFormat:
+      args.outputFormat = key
+    of coYtDlpExtras:
+      args.ytDlpExtras = key
+    of coScale:
+      video.scale = parseNum(key, $expecting)
+      video.scaleSet = true
+    of coFont:
+      fallbackFont = key
+    of coResolution:
+      args.resolution = parseResolution(key, $expecting)
+      args.resolutionSet = true
+    of coBackground:
+      try: args.background = some(parseColor(key))
+      except ValueError as e: error e.msg
+    of coSampleRate:
+      args.sampleRate = parseSampleRate(key)
+    of coFrameRate:
+      args.frameRate = parseFrameRate(key)
+    of coVcodec:
+      video.codec = key
+    of coVideoBitrate:
+      video.bitrate = parseBitrate(key)
+    of coCrf:
+      var val: int
+      if key.len == 0 or parseSaturatedNatural(key, val) != key.len:
+        error "invalid constant rate factor: " & key
+      if val > 63: error "constant rate factor is too high: " & key
+      video.crf = val.int8
+    of coGop:
+      var val: int
+      if key.len == 0 or parseSaturatedNatural(key, val) != key.len or val < 1:
+        error "invalid gop size: " & key
+      video.gop = val
+    of coVprofile:
+      video.profile = key
+    of coPreset:
+      video.preset = key
+    of coPixFmt:
+      video.pixFmt = key
+    of coAcodec:
+      audio.codec = key
+    of coLayout:
+      audio.layout = key
+    of coAudioNormalize:
+      audio.normalize = parseNorm(key)
+    of coAudioBitrate:
+      audio.bitrate = parseBitrate(key)
+    of coProgress:
+      try:
+        args.progress = parseEnum[BarType](key)
+      except ValueError:
+        error &"{key} is not a choice for --progress\nchoices are:\n  modern, classic, ascii, machine, none"
+    of coMargin:
+      args.margin = parseTwoLengths(key, $expecting)
+    of coSmooth:
+      args.smooth = parseTwoLengths(key, $expecting)
+    of coTransition:
+      (args.transition, args.transitionMinCut) = parseTransition(key)
+    of coKey:
+      args.licenseKey = key
+    else:
+      discard
+    expecting = coNone
+    expectingLabel = 1
+
+  if expecting != coNone:
+    error &"--{expecting} needs argument."
+
+  if showVersion:
+    echo version
+    quit(0)
+
+  when defined(emscripten):
+    useWebCodecs = args.webCodecs
+
+  if args.inputs.len == 0 and isDebug:
+    echo "Auto-Editor: ", version
+    when defined(windows):
+      echo "OS: Windows ", when hostCPU == "amd64": "x86_64" else: hostCPU
+    elif defined(emscripten):
+      echo (when hostCPU == "wasm32": "OS: wasm32" else: "OS: wasm64")
+    else:
+      let plat = uname()
+      echo "OS: ", plat.sysname, " ", plat.release, " ", plat.machine
+    echo listAvailableFilters()
+    quit(0)
+
+  # Fail fast on `add` (a CLI-only signal) before any expensive analysis.
+  # Multiple inputs are handled later by the multi-source render/export policy
+  # in conductor.editMedia, which also covers imported timelines.
+  if args.adds.len > 0:
+    requireLicense(args, "use the `add` action")
+
+  var micTempPath = ""
+  defer:
+    if micTempPath != "" and fileExists(micTempPath):
+      removeFile(micTempPath)
+
+  for i, myInput in args.inputs:
+    if myInput == ":mic":
+      when defined(macosx) or defined(windows) or
+          (defined(linux) and not defined(emscripten)):
+        if args.inputs.len != 1:
+          error "Microphone capture (:mic) cannot be combined with other inputs."
+        if args.output == "":
+          args.output = "mic_ALTERED.wav"
+        let outputExt = agSplitFile(args.output).ext.toLowerAscii
+        let keepRecording = args.`export`.kind notin
+          {exAuto, exDefault, exClipSequence} or
+          outputExt in [".xml", ".fcpxml", ".mlt", ".kdenlive", ".otio",
+                        ".json", ".v1", ".v2", ".v3"]
+        var capturePath: string
+        if keepRecording:
+          if args.output == "-":
+            capturePath = "mic_RECORDING.mka"
+          else:
+            let (outDir, outName, _) = agSplitFile(args.output)
+            capturePath = (outDir / outName) & "_RECORDING.mka"
+        else:
+          let (tempFile, tempPath) = createTempFile("auto-editor-mic-", ".mka")
+          tempFile.close()
+          micTempPath = tempPath
+          capturePath = tempPath
+        let recordingCodec = resolveRecordingCodec(keepRecording,
+          audio.codec)
+        if recordingCodec != "auto":
+          validateAudioCodec(recordingCodec, capturePath)
+        stopMicCapture = false
+        micCaptureActive = true
+        if args.sampleRate > 0 or recordingCodec != "auto":
+          block:
+            let (rawFile, rawPath) = createTempFile("auto-editor-mic-raw-", ".mka")
+            rawFile.close()
+            defer:
+              if fileExists(rawPath):
+                removeFile(rawPath)
+            recordMic(rawPath, addr stopMicCapture)
+            micCaptureActive = false
+            transcodeAudio(rawPath, capturePath, 0, args.sampleRate,
+              recordingCodec)
+        else:
+          recordMic(capturePath, addr stopMicCapture)
+          micCaptureActive = false
+        args.inputs[i] = capturePath
+      else:
+        error "Microphone capture (:mic) is not supported on this platform."
+    elif myInput.startsWith("http://") or myInput.startsWith("https://"):
+      when defined(emscripten):
+        error "URL inputs are not supported in the wasm build."
+      else:
+        args.inputs[i] = downloadVideo(myInput, args)
+        args.urlInput = true
+    elif agSplitFile(myInput).ext == "":
+      if dirExists(myInput):
+        error "Input must be a file or a URL, not a directory."
+      if myInput.startsWith("-"):
+        if i >= positionalStart:
+          error &"Input file doesn't exist: {myInput}"
+        error &"Option/Input file doesn't exist: {myInput}"
+      error &"Input file must have an extension: {myInput}"
+
+  editMedia(args, video, audio)
+
+when isMainModule:
+  try:
+    main()
+  except AutoEditorError as e:
+    fatal e.msg

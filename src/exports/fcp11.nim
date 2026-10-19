@@ -1,0 +1,261 @@
+import std/[strformat, strutils, tables, xmltree]
+from std/math import round
+
+import ../[action, ffmpeg, log, media, timeline]
+import ../util/[fun, rational]
+
+#[
+Export a FCPXML 11 file readable with Final Cut Pro 10.6.8 or later.
+
+See docs here:
+https://developer.apple.com/documentation/professional_video_applications/fcpxml_reference
+
+]#
+
+{.push raises: [AutoEditorError].}
+
+func getColorspace(mi: MediaInfo): string {.raises: [].} =
+  # See: https://developer.apple.com/documentation/professional_video_applications/fcpxml_reference/asset#3686496
+
+  if mi.v.len == 0:
+    return "1-1-1 (Rec. 709)"
+
+  let s = mi.v[0]
+  if s.pix_fmt == AV_PIX_FMT_RGB24:
+    return "sRGB IEC61966-2.1"
+  if s.color_space == 5: # "bt470bg"
+    return "5-1-6 (Rec. 601 PAL)"
+  if s.color_space == 6: # "smpte170m"
+    return "6-1-6 (Rec. 601 NTSC)"
+  if s.color_primaries == 9: # "bt2020"
+    # See: https://video.stackexchange.com/questions/22059/how-to-identify-hdr-video
+    if s.color_transfer == 16 or s.color_transfer == 18: # "smpte2084" "arib-std-b67"
+      return "9-18-9 (Rec. 2020 HLG)"
+    return "9-1-9 (Rec. 2020)"
+
+  return "1-1-1 (Rec. 709)"
+
+func makeName(mi: MediaInfo, tb: AVRational): string {.raises: [].} =
+  if mi.getRes()[1] == 720'i32 and tb ~= 30:
+    return "FFVideoFormat720p30"
+  if mi.getRes()[1] == 720'i32 and tb ~= 25:
+    return "FFVideoFormat720p25"
+  if mi.getRes() == (3840'i32, 2160'i32) and tb ~= AVRational(num: 24000, den: 1001):
+    return "FFVideoFormat3840x2160p2398"
+  return "FFVideoFormatRateUndefined"
+
+proc parseSMPTE*(val: string, fps: AVRational): int =
+  if val.len == 0:
+    return 0
+
+  try:
+    let isDrop = ';' in val
+    let parts = val.replace(";", ":").split(":")
+    if len(parts) != 4:
+      raise newException(ValueError, "Invalid SMPTE format")
+
+    let hours = parseInt(parts[0])
+    let minutes = parseInt(parts[1])
+    let seconds = parseInt(parts[2])
+    let frames = parseInt(parts[3])
+
+    if hours < 0 or minutes < 0 or minutes >= 60 or seconds < 0 or seconds >=
+        60 or frames < 0:
+      raise newException(ValueError, "Invalid SMPTE values")
+
+    let timecodeFps = int(round(fps.num / fps.den))
+    if frames >= timecodeFps:
+      raise newException(ValueError,
+        &"Frame count {frames} exceeds timecode fps {timecodeFps}")
+
+    result = (hours * 3600 + minutes * 60 + seconds) * timecodeFps + frames
+    if isDrop and fps.num mod fps.den != 0:
+      let d = timecodeFps div 15
+      let totalMinutes = hours * 60 + minutes
+      result -= d * (totalMinutes - totalMinutes div 10)
+  except ValueError as e:
+    error &"Cannot parse SMPTE timecode '{val}': {e.msg}"
+
+func timecode(self: MediaInfo): string {.raises: [].} = # In SMPTE
+  for d in self.d:
+    if d.timecode.len > 0:
+      return d.timecode
+  for v in self.v:
+    if v.timecode.len > 0:
+      return v.timecode
+  return "00:00:00:00"
+
+proc fcp11WriteXml*(groupName, version, output: string, resolve: bool, tl: v3) =
+  func fraction(val: int64): string {.raises: [].} =
+    if val == 0:
+      return "0s"
+    return &"{val * tl.tb.den}/{tl.tb.num}s"
+
+  let verStr =
+    if version == "11": "1.11"
+    elif version == "10": "1.10"
+    else: error &"Unknown final cut pro version: {version}"
+
+  let fcpxml = <>fcpxml(version = verStr)
+  let resources = newElement("resources")
+  fcpxml.add(resources)
+
+  var srcDur = 0
+  var projName: string
+  var ptrToIdx = initTable[ptr string, int]()
+
+  var sources: seq[MediaInfo]
+  for track in tl.v & tl.a:
+    for clip in track:
+      if clip.src != nil and clip.src notin ptrToIdx:
+        ptrToIdx[clip.src] = sources.len
+        sources.add initMediaInfo(clip.src[])
+
+  for i, mi in sources:
+    # An asset's duration is that of the source media itself, not the
+    # (shorter) edited timeline. Clips reference positions in the source.
+    let assetDur = int(mi.duration * tl.tb)
+
+    if i == 0:
+      projName = agSplitFile(mi.path).name
+      srcDur = assetDur
+
+    let id = "r" & $(i * 2 + 1)
+    let width = $tl.res[0]
+    let height = $tl.res[1]
+    resources.add(<>format(id = id, name = makeName(mi, tl.tb),
+        frameDuration = fraction(1), width = width, height = height,
+        colorSpace = getColorspace(mi)))
+
+    let id2 = "r" & $(i * 2 + 2)
+    let hasVideo = (if mi.v.len > 0: "1" else: "0")
+    let hasAudio = (if mi.a.len > 0: "1" else: "0")
+    let audioChannels = (if mi.a.len == 0: "2" else: $mi.a[0].channels)
+
+    let startPoint = parseSMPTE(mi.timecode, tl.tb)
+    let r2 = <>asset(id = id2, name = agSplitFile(mi.path).name,
+        start = fraction(startPoint), hasVideo = hasVideo, format = id,
+        hasAudio = hasAudio, audioSources = "1",
+        audioChannels = audioChannels, duration = fraction(assetDur))
+
+    let mediaRep = newElement("media-rep")
+    mediaRep.attrs = {
+      "kind": "original-media",
+      "src": mi.path.absPath.pathToUri(),
+    }.toXmlAttributes
+
+    r2.add mediaRep
+    resources.add r2
+
+  var clips: seq[Clip]
+  var transitions: seq[Transition]
+  if tl.v.len > 0 and tl.v[0].len > 0:
+    clips = tl.v[0]
+    if tl.vt.len > 0: transitions = tl.vt[0]
+  elif tl.a.len > 0 and tl.a[0].len > 0:
+    clips = tl.a[0]
+    if tl.at.len > 0: transitions = tl.at[0]
+
+  # FCP matches this uid to its built-in Cross Dissolve Motion template;
+  # Resolve matches the transition by name.
+  let dissolveId = "r" & $(sources.len * 2 + 1)
+  if transitions.len > 0:
+    resources.add <>effect(id = dissolveId, name = "Cross Dissolve",
+      uid = "FxPlug:4731E73A-8DAC-4113-9A30-AE85B1761265")
+
+  let lib = <>library()
+  let evt = <>event(name = group_name)
+  let proj = <>project(name = projName)
+  # FCP/Resolve sequences only accept "stereo" or "surround"; map any
+  # other layout (e.g. "mono", "5.1") to one of these.
+  let audioLayout = (if tl.layout.nb_channels > 2: "surround" else: "stereo")
+  let audioRate = if tl.sr == 44100: "44.1k" else: "48k"
+  let sequence = <>sequence(format = "r1", tcStart = "0s", tcFormat = "NDF",
+      audioLayout = audioLayout, audioRate = audioRate)
+  let spine = <>spine()
+
+  sequence.add spine
+  proj.add sequence
+  evt.add proj
+  lib.add evt
+  fcpxml.add lib
+
+  proc makeClip(clip: Clip) =
+    let i = ptrToIdx.getOrDefault(clip.src)
+    let startPoint = parseSMPTE(sources[i].timecode, tl.tb)
+
+    let asset = newElement("asset-clip")
+    asset.attrs = {
+      "name": projName,
+      "ref": "r" & $(i * 2 + 2),
+      "offset": fraction(clip.start),
+      "duration": fraction(clip.dur),
+      "start": fraction(clip.offset + startPoint),
+      "tcFormat": "NDF"
+    }.toXmlAttributes
+
+    spine.add(asset)
+
+    let effectGroup = tl.effects[clip.effects]
+    for effect in effectGroup:
+      if effect.kind == actSpeed:
+        # See the "Time Maps" section.
+        # https://developer.apple.com/documentation/professional_video_applications/fcpxml_reference/story_elements/timemap/
+
+        let timemap = newElement("timeMap")
+        let timept1 = newElement("timept")
+        timept1.attrs = {"time": "0s", "value": "0s",
+            "interp": "smooth2"}.toXmlAttributes
+        timemap.add(timept1)
+
+        let timept2 = newElement("timept")
+        timept2.attrs = {
+          "time": fraction(int(srcDur.float / effect.val)),
+          "value": fraction(srcDur),
+          "interp": "smooth2"
+        }.toXmlAttributes
+        timemap.add(timept2)
+
+        asset.add(timemap)
+        break
+
+  proc addTransition(t: Transition) {.raises: [].} =
+    # A spine transition overlaps the edit point; the neighboring clips keep
+    # their trimmed extents and the editor pulls handle media from the source.
+    let tr = newElement("transition")
+    tr.attrs = {"name": "Cross Dissolve", "offset": fraction(t.spanStart),
+      "duration": fraction(t.dur)}.toXmlAttributes
+    if tl.v.len > 0:
+      let fv = newElement("filter-video")
+      fv.attrs = {"ref": dissolveId, "name": "Cross Dissolve"}.toXmlAttributes
+      tr.add fv
+    spine.add tr
+
+  if resolve:
+    for i in countdown(tl.a.len - 1, 1):
+      for clip in tl.a[i]:
+        if clip.src != nil:
+          makeClip(clip)
+
+  let plan = transitionPlan(clips, transitions)
+  for i, clip in clips:
+    if clip.src != nil:
+      # A centered incoming transition is already emitted as the previous
+      # clip's outgoing one.
+      if plan[i].incoming >= 0 and
+          transitions[plan[i].incoming].alignment == taStart:
+        addTransition(transitions[plan[i].incoming])
+      makeClip(clip)
+      if plan[i].outgoing >= 0:
+        addTransition(transitions[plan[i].outgoing])
+
+  if output == "-":
+    echo $fcpxml
+  else:
+    let xmlStr = "<?xml version='1.0' encoding='utf-8'?>\n" & $fcpxml
+    try:
+      writeFile(output, xmlStr)
+    except IOError, OSError:
+      error &"Cannot write to: {output}"
+
+{.pop.}

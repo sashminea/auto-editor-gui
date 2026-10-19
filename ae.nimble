@@ -1,0 +1,1321 @@
+# Package
+version = "0.0.0"
+author = "WyattBlue"
+description = "Effort free video editing!"
+license = "Unlicense"
+srcDir = "src"
+bin = @["main=auto-editor"]
+
+# Dependencies
+requires "nim >= 2.2.2"
+requires "nimcrypto == 0.7.3"
+
+# Tasks
+import std/[os, strutils, strformat, sequtils]
+
+let disableVpx = getEnv("DISABLE_VPX").len > 0
+let disableSvtAv1 = getEnv("DISABLE_SVTAV1").len > 0
+let disableHevc = getEnv("DISABLE_HEVC").len > 0
+let enableWhisper = getEnv("DISABLE_WHISPER").len == 0
+let enableVpl = getEnv("DISABLE_VPL").len == 0
+let enableLibass = getEnv("DISABLE_LIBASS").len == 0
+
+let
+  nativeBuildPath = absolutePath("build")
+  winBuildPath = absolutePath("build_win")
+  winArmBuildPath = absolutePath("build_winarm")
+  armv7BuildPath = absolutePath("build_armv7")
+  wasmBuildPath = absolutePath("build_wasm")
+  wa64BuildPath = absolutePath("build_wasm64")
+  ffmpegSrcDir = absolutePath("ffmpeg_sources/ffmpeg")
+  webCodecsDir = absolutePath("src")
+
+type CrossKind = enum native, winX64, winArm, armv7, wasm32, wasm64
+
+proc stripProgram(kind: CrossKind = native) =
+  let file = (
+    if kind == winX64 or kind == winArm: "auto-editor.exe"
+    elif kind == wasm32: "docs/src/auto-editor-web.wasm"
+    elif kind == wasm64: "docs/src/auto-editor-web64.wasm"
+    else: "auto-editor"
+  )
+
+  case kind
+  of wasm32, wasm64:
+    exec "wasm-strip " & file
+  of winX64, winArm:
+    exec "llvm-strip -s " & file
+  of armv7:
+    exec "arm-linux-gnueabihf-strip -s " & file
+  of native:
+    when defined(macosx):
+      exec "strip -ur " & file
+    when defined(linux):
+      exec "strip -s " & file
+
+  when defined(macosx):
+    exec &"stat -f \"%z bytes\" ./{file}"
+    echo ""
+  elif defined(linux):
+    exec &"stat -c \"%s bytes\" ./{file}"
+    echo ""
+
+task test, "Run unit tests":
+  exec "nim c -r tests/unit"
+
+task make, "Export the project":
+  exec "nim c -d:danger -d:flto --out:auto-editor src/main.nim"
+  stripProgram()
+
+task brewmake, "Build auto-editor with deps dynamically linked.":
+  exec "nim c -d:dynamic -d:danger -d:flto --out:auto-editor src/main.nim"
+  stripProgram()
+
+task cleanff, "Clean build files":
+  rmDir "build"
+  rmDir "build_win"
+  rmDir "build_winarm"
+  rmDir "build_armv7"
+  rmDir "build_wasm"
+  rmDir "build_wasm64"
+  for kind, path in walkDir("ffmpeg_sources"):
+    if kind == pcDir: rmDir path
+
+
+var disableDecoders: seq[string] = @[]
+
+# Can only decode (ambiguous encoder), Video [A-C]
+disableDecoders &= "4xm,aasc,agm,aic,anm,ansi,apv,arbc,argo,aura,aura2,avrn,avs,bethsoftvid,bfi,bink,binkvideo,bmv_video,brender_pix,c93,cavs,cdgraphics,cdtoons,cdxl,clearvideo,cllc,cmv,cpia,cri,cscd,cyuv".split(",")
+# [D-I]
+disableDecoders &= "dds,dfa,dsicinvideo,dxa,dxtory,escape124,escape130,fic,flic,fmvc,fraps,frwu,g2m,gdv,gem,hnm4video,hq_hqa,hqx,hymt,idcin,idf,iff_ilbm,imm4,imm5,indeo2,indeo3,indeo4,indeo5,interplay_video,ipu".split(",")
+# [J-M]
+disableDecoders &= "jv,kgv1,kmvc,lagarith,lead,loco,lscr,m101,mad,mdec,media100,mimic,mjpegb,mmvideo,mobiclip,motionpixels,msa1,mscc,msmpeg4v1,msp2,mss1,mss2,mszh,mts2,mv30,mvc1,mvc2,mvdv,mvha,mwsc,mxpeg".split(",")
+# [N-S]
+disableDecoders &= "notchlc,nuv,paf_video,pdv,pgx,photocd,pictor,pixlet,prosumer,psd,ptx,qdraw,qpeg,rasc,rl2,rscc,rtv1,rv10,rv20,rv30,rv40,rv60,sanm,scpr,screenpresso,sga,sgirle,sheervideo,simbiosis_imx,smackvideo,smvjpeg,sp5x,srgc,svq3".split(",")
+# [T-VP]
+disableDecoders &= "targa_y216,tdsc,tgq,tgv,thp,tiertexseqvideo,tmv,tqi,truemotion1,truemotion2,truemotion2rt,tscc,tscc2,txd,ulti,v210x,vb,vble,vc1,vc1image,vcr1,vixl,vmdvideo,vmix,vmnc,vp3,vp4,vp5,vp6,vp6a,vp6f,vp7".split(",")
+# [VQ-Z]
+disableDecoders &= "vplayer,vqc,vvc,wcmv,wmv1,wmv2,wmv3,wmv3image,wnv1,ws_vqa,xan_wc3,xan_wc4,xbin,xpm,ylc,yop,zerocodec".split(",")
+
+# Can only decode, Audio [0-A]
+disableDecoders &= "8svx_exp,8svx_fib,aac_latm,acelp_kelvin,adpcm_4xm,adpcm_afc,adpcm_agm,adpcm_aica,adpcm_ct,adpcm_dtk,adpcm_ea,adpcm_ea_maxis_xa,adpcm_ea_r1,adpcm_ea_r2,adpcm_ea_r3,adpcm_ea_xas,adpcm_ima_acorn,adpcm_ima_apc".split(",")
+# [B-F]
+disableDecoders &= "binkaudio_dct,binkaudio_rdft,bmv_audio,bonk,cbd2_dpcm,cook,derf_dpcm,dolby_e,dsd_lsbf,dsd_lsbf_planar,dsd_msbf,dsd_msbf_planar,dsicinaudio,dss_sp,dst,dvaudio,evrc,fastaudio,ftr".split(",")
+# [G-Q]
+disableDecoders &= "g728,g729,gremlin_dpcm,gsm,gsm_ms,hca,hcom,iac,imc,interplay_dpcm,interplay_acm,mace3,mace6,metasound,misc4,mp1,mp3adu,msnsiren,mpc7,mpc8,osq,paf_audio,qcelp,qdm2,qdmc,qoa".split(",")
+# [R-Z]
+disableDecoders &= "ra_288,ralf,rka,sdx2_dpcm,shorten,sipr,siren,smackaud,sol_dpcm,tak,truespeech,twinvq,vmdaudio,wady_dpcm,wavarc,wavesynth,westwood_snd1,wmalossless,wmapro,wmav1,wmav2,wmavoice,xan_dpcm,xma1,xma2,zero12v".split(",")
+
+# Technically obsolete [adpcm]
+disableDecoders &= "adpcm_adx,adpcm_argo,adpcm_g722,adpcm_g726,adpcm_g726le,adpcm_ima_alp,adpcm_ima_amv,adpcm_ima_apm,adpcm_ima_cunning,adpcm_ima_dat4,adpcm_ima_dk3,adpcm_ima_dk4,adpcm_ima_ea_eacs,adpcm_ima_ea_sead,adpcm_ima_iss,adpcm_ima_moflex,adpcm_ima_mtf,adpcm_ima_oki,adpcm_ima_qt,adpcm_ima_qt_at,adpcm_ima_rad,adpcm_ima_smjpeg,adpcm_ima_ssi,adpcm_ima_wav,adpcm_ima_ws,adpcm_ima_xbox,adpcm_ms,adpcm_mtaf,adpcm_psx,adpcm_sanyo,adpcm_sbpro_2,adpcm_sbpro_3,adpcm_sbpro_4,adpcm_swf,adpcm_thp,adpcm_thp_le,adpcm_vima,adpcm_xa,adpcm_xmd,adpcm_yamaha,adpcm_zork".split(",")
+
+# Technically obsolute
+disableDecoders &= "alias_pix,apac,ape,atrac1,atrac3,atrac3al,atrac3p,atrac3pal,atrac9,asv1,asv2,avrp,bmp,ccaption,cinepak,cljr,cllc,comfortnoise,dpx,eacmv,eamad,eatgq,eatgv,eatqi,eightbps,eightsvx_exp,eightsvx_fib,ffvhuff,ffwavesynth,flv,g723_1,g726,g726le,g728,g729,hnm4_video,huffyuv,ircam,jacosub,magicyuv,nellymoser,on2avc,pam,pbm,pcm_vidc,pgmyuv,pjs,ra_144,roq,roq_dpcm,rpza,r10k,r210,sgi,speedhq,speex,smacker,smc,snow,sonic,sonic_ls,subrip,utvideo,v210,v308,v408,v410,wbmp,wrapped_avframe,ws_snd1,wsaud,xbm,xface,xsub,xwd,y41p,yuv4".split(",")
+
+disableDecoders &= ["pcm_alaw", "pcm_mulaw"]
+
+disableDecoders &= ["h261", "opus"]  # We use libopus
+# libvpx decodes instead: smaller, and adds alpha WebM. FFmpeg's own VP8
+# decoder stays, since WebP images are VP8 inside and its webp decoder uses it;
+# findSoftwareDecoder still picks libvpx for VP8 video.
+disableDecoders &= ["vp9"]
+
+# Irrelevant to this project
+disableDecoders &= "cc_dec,dirac,fits,jpeg2000,jpegls,mpl2,msrle,pgssub,qoi,sami,subviewer,subviewer1,sunrast,targa,tiff,vvc_qsv".split(",")
+
+# Bluetooth/VoIP/game/screencap/exotic image+subtitle: never in editable media
+disableDecoders &= "aptx,aptx_hd,sbc,ilbc,dfpwm,s302m,als,tta,wavpack,mp1float,mp3adufloat,mp3on4,mp3on4float,dxv,hap,vqa,fourxm,zmbv,flashsv,flashsv2,msvideo1,svq1,xl,vbn,bintext,bitpacked,avui,pcx,pfm,pgm,phm,ppm,realtext,stl".split(",")
+
+type Package = object
+  name: string
+  sourceUrl: string
+  sha256: string
+  buildArguments: seq[string]
+  buildSystem: string = "autoconf"
+  ffFlag: string = ""
+
+let nvheaders = Package(
+  name: "nv-codec-headers",
+  sourceUrl: "https://github.com/FFmpeg/nv-codec-headers/archive/refs/tags/n13.0.19.0.tar.gz",
+  sha256: "86d15d1a7c0ac73a0eafdfc57bebfeba7da8264595bf531cf4d8db1c22940116",
+)
+let amfheaders = Package(
+  name: "amf-headers",
+  sourceUrl: "https://github.com/GPUOpen-LibrariesAndSDKs/AMF/archive/refs/tags/v1.5.2.tar.gz",
+  sha256: "8a70b6dc85261e6e6e57769bd81ac1e09c0a4c96bbd5e358ffbc2dee51e8e50a",
+  ffFlag: "--enable-amf",
+)
+let alsa = Package(
+  name: "alsa-lib",
+  sourceUrl: "https://www.alsa-project.org/files/pub/lib/alsa-lib-1.2.14.tar.bz2",
+  sha256: "be9c88a0b3604367dd74167a2b754a35e142f670292ae47a2fdef27a2ee97a32",
+  buildArguments: @["--disable-python"],
+)
+let libvpl = Package(
+  name: "libvpl",
+  sourceUrl: "https://github.com/intel/libvpl/archive/refs/tags/v2.16.0.tar.gz",
+  sha256: "d60931937426130ddad9f1975c010543f0da99e67edb1c6070656b7947f633b6",
+  buildSystem: "cmake",
+  buildArguments: @[
+    "-DINSTALL_LIB=ON",
+    "-DINSTALL_DEV=ON",
+    "-DINSTALL_EXAMPLES=OFF",
+    "-DBUILD_EXPERIMENTAL=OFF",
+    "-DBUILD_TESTS=OFF",
+    "-DBUILD_EXAMPLES=OFF",
+  ],
+  ffFlag: "--enable-libvpl",
+)
+let lamer = Package(
+  name: "lamer",
+  sourceUrl: "https://github.com/basswood-io/lamer/archive/refs/tags/v3.101.0.tar.gz",
+  sha256: "81839b16fdc401e20b73389d05f32a7656008f43bcb960feff290d6f08fc109e",
+  buildSystem: "make",
+  ffFlag: "--enable-libmp3lame",
+)
+let opus = Package(
+  name: "opus",
+  sourceUrl: "https://ftp.osuosl.org/pub/xiph/releases/opus/opus-1.6.1.tar.gz",
+  sha256: "6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1",
+  buildArguments: @["--disable-doc", "--disable-extra-programs"],
+  ffFlag: "--enable-libopus",
+)
+let vpx = Package(
+  name: "libvpx",
+  sourceUrl: "https://github.com/webmproject/libvpx/archive/refs/tags/v1.17.0.tar.gz",
+  sha256: "1020f184046187baa2985dbde38e0691f49c44088bca7a1842b0236c6081dc0a",
+  buildArguments: (
+    "--disable-dependency-tracking --disable-examples --disable-unit-tests " &
+    (when defined(macosx) and hostCPU == "amd64": "--disable-avx512 " else: "") &
+    "--enable-runtime-cpu-detect --enable-vp9-highbitdepth"
+  ).split(" "),
+  ffFlag: "--enable-libvpx",
+)
+let dav1d = Package(
+  name: "dav1d",
+  sourceUrl: "https://code.videolan.org/videolan/dav1d/-/archive/1.5.4/dav1d-1.5.4.tar.bz2",
+  sha256: "2abfb0c89212e6e4733a54e0ae509ec00a5b845a6360946f918806e14aedb011",
+  buildSystem: "meson",
+  buildArguments: @["-Denable_docs=false", "-Denable_tools=false",
+    "-Denable_examples=false", "-Denable_tests=false"],
+  ffFlag: "--enable-libdav1d",
+)
+let svtav1 = Package(
+  name: "libsvtav1",
+  sourceUrl: "https://gitlab.com/AOMediaCodec/SVT-AV1/-/archive/v4.2.0/SVT-AV1-v4.2.0.tar.bz2",
+  sha256: "512f2ea5649e3e76c2dddcc25c2556fb67a9582baaab207c9c96161c94659dad",
+  buildSystem: "cmake",
+  buildArguments: @["-DBUILD_APPS=OFF", "-DBUILD_DEC=OFF", "-DBUILD_ENC=ON", "-DENABLE_NASM=ON"],
+  ffFlag: "--enable-libsvtav1",
+)
+let whisper = Package(
+  name: "whisper",
+  sourceUrl: "https://github.com/ggml-org/whisper.cpp/archive/refs/tags/v1.9.5.tar.gz",
+  sha256: "ff1a9053feb509ff9d7729703355541ae9690073a6b1c40eb692c962e0dc1720",
+  buildSystem: "cmake",
+  buildArguments: @[
+    "-DGGML_NATIVE=OFF", # Favor portability, don't use native CPU instructions
+    "-DGGML_CUDA=OFF",
+    "-DWHISPER_SDL2=OFF",
+    "-DWHISPER_BUILD_EXAMPLES=OFF",
+    "-DWHISPER_BUILD_TESTS=OFF",
+    "-DWHISPER_BUILD_SERVER=OFF",
+    "-DWHISPER_BUILD_IS_DEV=OFF", # Building from a release tag, not a nightly
+    when defined(macosx) and hostCPU == "arm64": "-DGGML_METAL=ON" else: "-DGGML_METAL=OFF",
+    when defined(macosx): "-DGGML_METAL_EMBED_LIBRARY=ON" else: "-DGGML_METAL_EMBED_LIBRARY=OFF",
+    when defined(macosx): "-DGGML_BLAS=ON" else: "-DGGML_BLAS=OFF",
+  ],
+  ffFlag: "--enable-whisper",
+)
+let x264 = Package(
+  name: "x264",
+  sourceUrl: "https://code.videolan.org/videolan/x264/-/archive/b35605ace3ddf7c1a5d67a2eb553f034aef41d55/x264-b35605ace3ddf7c1a5d67a2eb553f034aef41d55.tar.bz2",
+  sha256: "6eeb82934e69fd51e043bd8c5b0d152839638d1ce7aa4eea65a3fedcf83ff224",
+  buildArguments: "--disable-cli --disable-lsmash --disable-swscale --disable-ffms --disable-opencl --enable-strip".split(" "),
+  ffFlag: "--enable-libx264",
+)
+let x265 = Package(
+  name: "x265",
+  sourceUrl: "https://github.com/Multicorewareinc/x265/releases/download/4.3/x265_4.3.tar.gz",
+  sha256: "83c53e4c8bbb8f1e33ed59e10a7d621d1d7801ca853910c3eb41f038b8ffb121",
+  buildSystem: "x265",
+  ffFlag: "--enable-libx265"
+)
+let zlib = Package(
+  name: "zlib",
+  sourceUrl: "https://zlib.net/zlib-1.3.2.tar.gz",
+  sha256: "bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16",
+  ffFlag: "--enable-zlib",
+)
+let freetype = Package(
+  name: "freetype",
+  sourceUrl: "https://download.savannah.gnu.org/releases/freetype/freetype-2.15.0.tar.xz",
+  sha256: "93cd47eb719c325107f2d3cf087d06299e944c3b48a40b55537302304dea1dd5",
+  buildSystem: "cmake",
+  # As gui/make-freetype.sh builds it, so the app links this one copy.
+  buildArguments: @["-DFT_DISABLE_ZLIB=ON", "-DFT_DISABLE_BZIP2=ON",
+    "-DFT_DISABLE_PNG=ON", "-DFT_DISABLE_HARFBUZZ=ON", "-DFT_DISABLE_BROTLI=ON",
+    "-DFT_DISABLE_HVF=ON"],
+)
+let fribidi = Package(
+  name: "fribidi",
+  sourceUrl: "https://github.com/fribidi/fribidi/releases/download/v1.0.16/fribidi-1.0.16.tar.xz",
+  sha256: "1b1cde5b235d40479e91be2f0e88a309e3214c8ab470ec8a2744d82a5a9ea05c",
+  buildSystem: "meson",
+  buildArguments: @["-Ddocs=false", "-Dbin=false", "-Dtests=false"],
+)
+let harfbuzz = Package(
+  name: "harfbuzz",
+  sourceUrl: "https://github.com/harfbuzz/harfbuzz/releases/download/11.2.1/harfbuzz-11.2.1.tar.xz",
+  sha256: "093714c8548a285094685f0bdc999e202d666b59eeb3df2ff921ab68b8336a49",
+  buildSystem: "meson",
+  buildArguments: @["--auto-features=disabled", "-Dtests=disabled",
+    "-Ddocs=disabled", "-Dutilities=disabled", "-Dintrospection=disabled",
+    "-Dbenchmark=disabled"],
+)
+let libass = Package(
+  name: "libass",
+  sourceUrl: "https://github.com/libass/libass/releases/download/0.17.4/libass-0.17.4.tar.xz",
+  sha256: "78f1179b838d025e9c26e8fef33f8092f65611444ffa1bfc0cfac6a33511a05a",
+  buildSystem: "meson",
+  buildArguments: @["--auto-features=disabled", "-Dtest=disabled",
+    "-Dcompare=disabled", "-Dprofile=disabled", "-Dfuzz=disabled",
+    "-Dcheckasm=disabled", "-Dlibunibreak=disabled"],
+)
+let ffmpeg = Package(
+  name: "ffmpeg",
+  sourceUrl: "https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz",
+  sha256: "8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e",
+)
+
+proc selectPackages(kind: CrossKind = native): seq[Package] =
+  result = @[]
+  let isMacNative = defined(macosx) and kind == native
+  let isWasm = kind == wasm32 or kind == wasm64
+  if kind != armv7 and kind != winArm and not isMacNative and not isWasm:
+    result.add nvheaders
+  # AMD AMF: x86_64 Windows and Linux only
+  if kind == winX64 or (kind == native and not isMacNative and hostCPU == "amd64"):
+    result.add amfheaders
+  if kind == armv7 or (kind == native and defined(linux)):
+    result.add alsa
+  if enableVpl and kind != winArm and kind != armv7 and not isWasm and not isMacNative:
+    result.add libvpl
+  if enableWhisper:
+    result.add whisper
+  result &= [lamer, opus, dav1d, x264, zlib]
+  if enableLibass:
+    result &= [freetype, fribidi, harfbuzz]
+    result.add libass
+  if not disableVpx:
+    result.add vpx
+  if not disableSvtAv1 and not isWasm:
+    result.add svtav1
+  if not disableHevc and not isWasm:
+    result.add x265
+  return result
+
+func location(package: Package): string =
+  package.sourceUrl.split("/")[^1]
+
+func dirName(package: Package): string =
+  if package.name == "libvpx":
+    return "libvpx-1.17.0"
+  if package.name == "libvpl":
+    return "libvpl-2.16.0"
+  if package.name == "nv-codec-headers":
+    return "nv-codec-headers-n13.0.19.0"
+  if package.name == "amf-headers":
+    return "AMF-1.5.2"
+  if package.name == "whisper":
+    return "whisper.cpp-1.9.5"
+  if package.name == "lamer":
+    return "lamer-3.101.0"
+
+  var name = package.location
+  for ext in [".tar.gz", ".tar.xz", ".tar.bz2", ".orig"]:
+    if name.endsWith(ext):
+      name = name[0..^ext.len+1]
+
+  if package.name != "x265":
+    return name.replace("_", "-")
+  return name
+
+
+proc getFileHash(filename: string): string =
+  let (existsOutput, existsCode) = gorgeEx("test -f " & filename)
+  if existsCode != 0:
+    raise newException(IOError, "File does not exist: " & filename)
+
+  let (output, exitCode) = gorgeEx("shasum -a 256 " & filename)
+  if exitCode != 0:
+    raise newException(IOError, "Cannot hash file: " & filename)
+  return output.split()[0]
+
+proc download(package: Package) =
+  if not fileExists(package.location):
+    # An uncaught exec failure makes nimble exit 0, which would let a partial
+    # ffmpeg_sources get cached. quit(1) fails the job so the cache isn't saved.
+    try:
+      exec &"curl -fL --retry 5 --retry-all-errors --retry-delay 2 -O {package.sourceUrl}"
+    except OSError:
+      echo &"Failed to download {package.name} from {package.sourceUrl}"
+      quit(1)
+
+  # Verify every run, not only after a fresh download: the tarball may come
+  # from the CI cache or be left over from a previous hash-rejected run.
+  let filename = "ffmpeg_sources" / package.location
+  let hash = getFileHash(filename)
+  if package.sha256 != hash:
+    # Remove the tarball (or the next run trusts it via fileExists) and any
+    # tree extracted from it (or extract() skips it via dirExists).
+    rmFile(package.location)
+    rmDir(package.name)
+    echo &"{filename}\nsha256 hash of {package.name} tarball do not match!"
+    echo &"Expected: {package.sha256}\nGot: {hash}"
+    quit(1)
+
+proc extract(package: Package) =
+  if not dirExists(package.name):
+    let tarArgs = (if package.location.endsWith("bz2"): "xjf" else: "xf")
+    exec &"tar {tarArgs} {package.location} && mv {package.dirName} {package.name}"
+    let patchFile = &"../patches/{package.name}.patch"
+    if fileExists(patchFile):
+      let cmd = &"patch -d {package.name} -i {absolutePath(patchFile)} -p1 --force"
+      echo "Applying patch: ", cmd
+      exec cmd
+
+proc makeInstall =
+  when defined(macosx):
+    exec "make -j$(sysctl -n hw.ncpu)"
+  elif defined(linux):
+    exec "make -j$(nproc)"
+  else:
+    exec "make -j4"
+  exec "make install"
+
+proc cmakeBuild(package: Package, buildPath: string, kind: CrossKind) =
+  let cmakeBuildDir = buildPath / "pkg" / package.name
+  mkDir(cmakeBuildDir)
+
+  var cmakeArgs = @[
+    &"-DCMAKE_INSTALL_PREFIX={buildPath}",
+    "-DCMAKE_BUILD_TYPE=Release",
+    "-DBUILD_SHARED_LIBS=OFF",
+    "-DBUILD_STATIC_LIBS=ON",
+  ] & package.buildArguments
+
+  if kind == armv7 and package.name == "libsvtav1":
+    # SVT-AV1 enables NASM x86 asm; force off for ARM cross-compile
+    cmakeArgs = cmakeArgs.filterIt(it != "-DENABLE_NASM=ON")
+    cmakeArgs.add("-DENABLE_NASM=OFF")
+    # Disable LTO: bitcode embeds -mfloat-abi=hard without -mfpu, so the LTO
+    # recompile during FFmpeg's link tests fails ("architecture lacks an FPU")
+    cmakeArgs.add("-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF")
+    cmakeArgs.add("-DSVT_AV1_LTO=OFF")
+
+  let sourceDir = absolutePath(".")
+  if package.name == "libsvtav1" or package.name == "whisper":
+    cmakeArgs.add(&"-DCMAKE_C_FLAGS=-ffile-prefix-map={sourceDir}/=")
+    cmakeArgs.add(&"-DCMAKE_CXX_FLAGS=-ffile-prefix-map={sourceDir}/=")
+
+  if package.name == "libsvtav1":
+    if defined(macosx) and hostCPU == "amd64" and kind == native:
+      cmakeArgs.add("-DENABLE_AVX512=OFF")
+    # SVT-AV1's CMakeLists writes archives into the source tree at
+    # Bin/${CMAKE_BUILD_TYPE}/. Override the CACHE PATH so the .a stays in
+    # the build dir and re-installs don't produce a hybrid BSD/GNU archive.
+    cmakeArgs.add(&"-DCMAKE_OUTPUT_DIRECTORY={cmakeBuildDir}/Bin")
+
+  if kind in {winX64, winArm} and package.name == "freetype":
+    # windres needs the target to find mingw's headers for the version resource.
+    let triple = if kind == winX64: "x86_64-w64-mingw32" else: "aarch64-w64-mingw32"
+    cmakeArgs.add(&"-DCMAKE_RC_FLAGS=--target={triple}")
+  if kind == winX64:
+    let toolchainFile = buildPath.parentDir / "scripts" / "x86_64-w64-mingw32.cmake"
+    cmakeArgs.add(&"-DCMAKE_TOOLCHAIN_FILE={toolchainFile}")
+    if package.name == "whisper":
+      # llvm-mingw has no libgomp; ggml falls back to its own threadpool
+      cmakeArgs.add("-DGGML_OPENMP=OFF")
+  elif kind == winArm:
+    let toolchainFile = buildPath.parentDir / "scripts" / "aarch64-w64-mingw32.cmake"
+    cmakeArgs.add(&"-DCMAKE_TOOLCHAIN_FILE={toolchainFile}")
+    if package.name == "whisper":
+      cmakeArgs.add("-DGGML_OPENMP=OFF")
+  elif kind == armv7:
+    let toolchainFile = buildPath.parentDir / "scripts" / "arm-linux-gnueabihf.cmake"
+    cmakeArgs.add(&"-DCMAKE_TOOLCHAIN_FILE={toolchainFile}")
+    if package.name == "whisper":
+      cmakeArgs.add("-DGGML_OPENMP=OFF")
+  if package.name == "whisper" and kind != native:
+    cmakeArgs.add(["-DGGML_METAL=OFF", "-DGGML_METAL_EMBED_LIBRARY=OFF", "-DGGML_BLAS=OFF"])
+
+  withDir cmakeBuildDir:
+    if not fileExists("CMakeCache.txt"):
+      let cmakeCmd = "cmake " & cmakeArgs.join(" ") & " " & sourceDir
+      echo "RUN: ", cmakeCmd
+      exec cmakeCmd
+      makeInstall()
+
+  # Fix whisper.pc file to include correct library order and dependencies
+  if package.name == "whisper":
+    # Fix library naming for cross-compilation - add lib prefix if missing
+    let libDir = buildPath / "lib"
+    for libFile in ["ggml.a", "ggml-base.a", "ggml-cpu.a"]:
+      let srcFile = libDir / libFile
+      let dstFile = libDir / ("lib" & libFile)
+      if fileExists(srcFile) and not fileExists(dstFile):
+        echo &"Renaming {srcFile} to {dstFile}"
+        exec &"mv \"{srcFile}\" \"{dstFile}\""
+
+    # ggml-base.a is built but not installed by cmake; copy it manually
+    let ggmlBaseDst = libDir / "libggml-base.a"
+    if not fileExists(ggmlBaseDst):
+      let ggmlBaseSrc = "build_cmake/ggml/src/ggml-base.a"
+      if fileExists(ggmlBaseSrc):
+        echo &"Copying {ggmlBaseSrc} to {ggmlBaseDst}"
+        exec &"cp \"{ggmlBaseSrc}\" \"{ggmlBaseDst}\""
+    
+    # Write whisper.pc from scratch to avoid format changes breaking string substitution
+    let pcFile = buildPath / "lib/pkgconfig/whisper.pc"
+    echo "Writing whisper.pc file"
+    let (libs, libsPrivate) =
+      if kind == native and defined(macosx) and hostCPU == "arm64":
+        ("-L${libdir} -lwhisper -lparakeet -lggml-base -lggml -lggml-cpu -lggml-blas -lggml-metal",
+         "-framework Accelerate -framework Metal -framework MetalKit -framework Foundation -lc++")
+      elif kind == native and defined(macosx):
+        ("-L${libdir} -lwhisper -lparakeet -lggml-base -lggml -lggml-cpu -lggml-blas",
+         "-framework Accelerate -framework MetalKit -framework Foundation -lc++")
+      elif kind in {winX64, winArm}:
+        ("-L${libdir} -lwhisper -lparakeet -lggml-base -lggml -lggml-cpu",
+         "-lpthread -lm -lstdc++")
+      else:
+        ("-L${libdir} -lwhisper -lparakeet -lggml-base -lggml -lggml-cpu",
+         "-lgomp -lpthread -lm -lstdc++")
+    writeFile(pcFile, &"""prefix={buildPath}
+exec_prefix=${{prefix}}
+libdir=${{exec_prefix}}/lib
+includedir=${{prefix}}/include
+
+Name: whisper
+Description: whisper.cpp
+Version: 1.9.5
+Libs: {libs}
+Libs.private: {libsPrivate}
+Cflags: -I${{includedir}}
+""")
+
+proc cmakeBuildWasm(package: Package, buildPath: string, kind: CrossKind = wasm32) =
+  let cmakeBuildDir = buildPath / "pkg" / package.name
+  mkDir(cmakeBuildDir)
+  let memArg = if kind == wasm64: " -m64" else: ""
+
+  let sourceDir = absolutePath(".")
+  withDir cmakeBuildDir:
+    if not fileExists("CMakeCache.txt"):
+      var args = @[
+        &"-DCMAKE_INSTALL_PREFIX={buildPath}",
+        "-DCMAKE_BUILD_TYPE=Release",
+        "-DBUILD_SHARED_LIBS=OFF",
+      ]
+      case package.name
+      of "whisper":
+        args &= @[
+          "-DGGML_NATIVE=OFF", "-DGGML_CUDA=OFF", "-DGGML_METAL=OFF",
+          "-DGGML_BLAS=OFF", "-DGGML_OPENMP=OFF", "-DGGML_BACKEND_DL=OFF",
+          "-DWHISPER_SDL2=OFF", "-DWHISPER_BUILD_EXAMPLES=OFF",
+          "-DWHISPER_BUILD_TESTS=OFF", "-DWHISPER_BUILD_SERVER=OFF",
+          "-DWHISPER_BUILD_IS_DEV=OFF",
+          "-DEMSCRIPTEN_SYSTEM_PROCESSOR=" & (if kind == wasm64: "wasm64" else: "wasm32"),
+        ]
+        # -msimd128 enables ggml's hand-written wasm SIMD paths; -mfma exposes
+        # the compatible FMA intrinsics and -mrelaxed-simd enables fused ops.
+        args &= @[
+          &"\"-DCMAKE_C_FLAGS=-msimd128 -mfma -mrelaxed-simd{memArg}\"",
+          &"\"-DCMAKE_CXX_FLAGS=-msimd128 -mfma -mrelaxed-simd{memArg}\"",
+        ]
+        if kind == wasm64:
+          args.add "\"-DCMAKE_EXE_LINKER_FLAGS=-m64\""
+      of "libsvtav1":
+        # -fno-honor-nans works around an isKnownNeverNaN stack overflow in
+        # emscripten 6.0.3's clang when selecting simd128 fmin/fmax patterns
+        # (crashes on noise_util.c); nnan flags let the check exit early
+        args &= @[
+          "-DBUILD_APPS=OFF", "-DBUILD_DEC=OFF", "-DBUILD_ENC=ON", "-DENABLE_NASM=OFF",
+          &"\"-DCMAKE_C_FLAGS=-matomics -msimd128 -mfma -fno-honor-nans{memArg}\"",
+          &"\"-DCMAKE_CXX_FLAGS=-matomics -msimd128 -mfma -fno-honor-nans{memArg}\"",
+        ]
+      else:
+        args &= package.buildArguments
+        args &= @[&"\"-DCMAKE_C_FLAGS=-matomics -msimd128 -mfma{memArg}\"",
+                  &"\"-DCMAKE_CXX_FLAGS=-matomics -msimd128 -mfma{memArg}\""]
+      exec "emcmake cmake " & sourceDir & " " & args.join(" ")
+    exec "make -j4 && make install"
+
+  if package.name == "whisper":
+    let libDir = buildPath / "lib"
+    for libFile in ["ggml.a", "ggml-base.a", "ggml-cpu.a"]:
+      let srcFile = libDir / libFile
+      let dstFile = libDir / ("lib" & libFile)
+      if fileExists(srcFile) and not fileExists(dstFile):
+        exec &"mv \"{srcFile}\" \"{dstFile}\""
+    let ggmlBaseDst = libDir / "libggml-base.a"
+    if not fileExists(ggmlBaseDst):
+      let ggmlBaseSrc = cmakeBuildDir / "ggml/src/ggml-base.a"
+      if fileExists(ggmlBaseSrc):
+        exec &"cp \"{ggmlBaseSrc}\" \"{ggmlBaseDst}\""
+    writeFile(libDir / "pkgconfig" / "whisper.pc", &"""prefix={buildPath}
+exec_prefix=${{prefix}}
+libdir=${{exec_prefix}}/lib
+includedir=${{prefix}}/include
+
+Name: whisper
+Description: whisper.cpp
+Version: 1.9.5
+Libs: -L${{libdir}} -lwhisper -lparakeet -lggml-base -lggml -lggml-cpu
+Libs.private: -lpthread -lm -lstdc++
+Cflags: -I${{includedir}}
+""")
+
+proc mesonBuild(package: Package, buildPath: string, kind: CrossKind) =
+  let mesonBuildDir = buildPath / "pkg" / package.name
+  let root = buildPath.parentDir
+  mkDir(mesonBuildDir)
+
+  var mesonArgs = @[
+    &"--prefix={buildPath}",
+    "--buildtype=release",
+    "--default-library=static",
+    # Not Debian's lib/<triple>: libraries go where everything else is linked
+    # from, so the packages built after them find their pkg-config files.
+    "--libdir=lib",
+    # Meson ignores PKG_CONFIG_PATH when cross-compiling; this it always reads.
+    &"-Dpkg_config_path={buildPath}/lib/pkgconfig",
+  ] & package.buildArguments
+  if package.name == "libass":
+    # Where libass finds the system's fonts.
+    let isMac = defined(macosx) and kind == native
+    mesonArgs.add("-Dcoretext=" & (if isMac: "enabled" else: "disabled"))
+    mesonArgs.add("-Ddirectwrite=" & (if kind in {winX64, winArm}: "enabled" else: "disabled"))
+    # Linux has none, so its fonts are only the ones given by path or attached.
+    mesonArgs.add("-Dfontconfig=disabled")
+    if kind notin {winX64, winArm} and not isMac:
+      mesonArgs.add("-Drequire-system-font-provider=false")
+    # Its x86 assembly (nasm) speeds up blending; elsewhere it's plain C.
+    let x86 = kind == winX64 or (kind == native and hostCPU == "amd64")
+    mesonArgs.add("-Dasm=" & (if x86: "enabled" else: "disabled"))
+  if kind == wasm32 or kind == wasm64:
+    if package.name == "dav1d":
+      mesonArgs.add "-Denable_asm=false"
+    let memArg = if kind == wasm64: " -m64" else: ""
+    mesonArgs.add &"-Dc_args=\"-matomics -msimd128 -mfma{memArg}\""
+    mesonArgs.add &"-Dcpp_args=\"-matomics -msimd128 -mfma{memArg}\""
+    if kind == wasm64:
+      mesonArgs.add "-Dc_link_args=\"-m64\""
+    let bits = (if kind == wasm64: "64" else: "32")
+    mesonArgs.add &"--cross-file={root}/scripts/wasm{bits}-emcc.txt"
+  elif kind == winX64:
+    mesonArgs.add &"--cross-file={root}/scripts/x86_64-w64-mingw32.txt"
+  elif kind == winArm:
+    mesonArgs.add &"--cross-file={root}/scripts/aarch64-w64-mingw32.txt"
+  elif kind == armv7:
+    mesonArgs.add &"--cross-file={root}/scripts/arm-linux-gnueabihf.txt"
+
+  let sourceDir = absolutePath(".")
+  withDir mesonBuildDir:
+    exec ("meson setup --reconfigure " & mesonArgs.join(" ") & " " & sourceDir)
+    exec "ninja"
+    exec "ninja install"
+
+proc x265Build(buildPath: string, kind: CrossKind) =
+  # Build x265 multiple times following the Homebrew approach:
+  #  1: Build 12 bits static library version in separate directory (if enabled)
+  #  2: Build 10 bits static library version in separate directory
+  #  3: Build 8 bits version, linking also 10 and optionally 12 bits
+  # By default supports 8 and 10 bits pixel formats (12-bit disabled for size)
+
+  if fileExists(buildPath / "lib" / "pkgconfig" / "x265.pc"):
+    return
+
+  if defined(macosx) and hostCPU == "amd64" and kind == native:
+    # Skip the project configs: they add auto-editor's own link flags, which
+    # cannot resolve from inside ffmpeg_sources.
+    exec "nim r -d:release --hints:off --skipParentCfg:on --skipProjCfg:on " &
+      "../../scripts/strip_avx512_asm.nim source/common/x86"
+
+  let isWasm = kind == wasm32 or kind == wasm64
+  let cmakePrefix = if isWasm: "emcmake cmake" else: "cmake"
+  let memArg = if kind == wasm64: " -m64" else: ""
+  let parallelJobs =
+    when defined(macosx): gorge("sysctl -n hw.ncpu").strip
+    elif defined(linux): gorge("nproc").strip
+    else: "4"
+
+  let sourceDir = absolutePath("source")
+  let pkgDir = buildPath / "pkg"
+  let dir10bit = pkgDir / "x265_10bit"
+  let dir8bit = pkgDir / "x265_8bit"
+
+  # For 10bit version, only x86_64 has assembly instructions available
+  var highBitDepthArgs: seq[string] = @[
+    "-DHIGH_BIT_DEPTH=1",
+    "-DEXPORT_C_API=0",
+    "-DENABLE_SHARED=0",
+    "-DENABLE_CLI=0"
+  ]
+  let isLinuxAarch64 = hostOS == "linux" and hostCPU == "arm64"
+
+  if hostCPU != "amd64" or kind == winArm or isWasm:
+    highBitDepthArgs.add("-DENABLE_ASSEMBLY=0")
+
+  if isLinuxAarch64:
+    highBitDepthArgs.add("-DENABLE_SVE2=0")
+
+  var commonArgs = @[
+    &"-DCMAKE_INSTALL_PREFIX={buildPath}",
+    "-DCMAKE_BUILD_TYPE=Release",
+    "-DCMAKE_POLICY_VERSION_MINIMUM=3.5",
+  ]
+
+  if isWasm:
+    commonArgs.add(&"\"-DCMAKE_C_FLAGS=-matomics -msimd128 -mfma -pthread{memArg}\"")
+    commonArgs.add(&"\"-DCMAKE_CXX_FLAGS=-matomics -msimd128 -mfma -pthread{memArg}\"")
+    if kind == wasm64:
+      commonArgs.add("\"-DCMAKE_EXE_LINKER_FLAGS=-m64\"")
+
+  if kind == winArm:
+    let toolchainFile = buildPath.parentDir / "scripts" / "aarch64-w64-mingw32.cmake"
+    commonArgs.add(&"-DCMAKE_TOOLCHAIN_FILE={toolchainFile}")
+    highBitDepthArgs.add("-DENABLE_ASSEMBLY=0")  # No x86 assembly for ARM64
+  elif kind == winX64:
+    let toolchainFile = buildPath.parentDir / "scripts" / "x86_64-w64-mingw32.cmake"
+    commonArgs.add(&"-DCMAKE_TOOLCHAIN_FILE={toolchainFile}")
+
+  echo "Building x265 10-bit..."
+  var cmake10Args = @["-S", sourceDir, "-B", dir10bit] & highBitDepthArgs & commonArgs
+  # Not applied for size: "-DENABLE_HDR10_PLUS=ON"
+  let cmake10Cmd = cmakePrefix & " " & cmake10Args.join(" ")
+  echo "RUN: ", cmake10Cmd
+  exec cmake10Cmd
+  exec &"cmake --build {dir10bit} --parallel {parallelJobs}"
+  exec &"mv {dir10bit}/libx265.a {dir10bit}/libx265_main10.a"
+
+  # Build 8-bit version with linked 10-bit
+  echo "Building x265 8-bit with multi-bit-depth support..."
+
+  # Create 8bit directory and copy the 10-bit library
+  mkDir(dir8bit)
+  cpFile(dir10bit / "libx265_main10.a", dir8bit / "libx265_main10.a")
+
+  var cmake8Cmd = &"{cmakePrefix} -S {sourceDir} -B {dir8bit}"
+  cmake8Cmd &= " -DEXTRA_LIB=x265_main10.a"
+  cmake8Cmd &= " -DEXTRA_LINK_FLAGS=-L."
+  cmake8Cmd &= " -DLINKED_10BIT=1"
+  cmake8Cmd &= " -DENABLE_SHARED=0"
+  cmake8Cmd &= " -DENABLE_CLI=0"
+  if isWasm:
+    cmake8Cmd &= " -DENABLE_ASSEMBLY=0"
+  for arg in commonArgs:
+    cmake8Cmd &= " " & arg
+
+  if isLinuxAarch64:
+    cmake8Cmd &= " -DENABLE_SVE2=0"
+
+  echo "RUN: ", cmake8Cmd
+  exec cmake8Cmd
+  exec &"cmake --build {dir8bit} --parallel {parallelJobs}"
+
+  # Manually combine libraries for multi-bit-depth support
+  echo "Combining x265 libraries for multi-bit-depth support..."
+  if defined(macosx) and not isWasm:
+    exec &"libtool -static -o {dir8bit}/libx265_combined.a {dir8bit}/libx265.a {dir10bit}/libx265_main10.a"
+  else:
+    let arCommand = (
+      case kind
+      of winArm, winX64: "llvm-ar"
+      of wasm32, wasm64: "emar"
+      else: "ar"
+    )
+    withDir dir8bit:
+      exec "echo 'CREATE libx265_combined.a' > combine.mri"
+      exec "echo 'ADDLIB libx265.a' >> combine.mri"
+      exec "echo 'ADDLIB libx265_main10.a' >> combine.mri"
+      exec "echo 'SAVE' >> combine.mri"
+      exec "echo 'END' >> combine.mri"
+      exec &"{arCommand} -M < combine.mri"
+
+  exec &"mv {dir8bit}/libx265_combined.a {dir8bit}/libx265.a"
+  exec &"cmake --install {dir8bit}"
+
+proc autoconfBuildWasm(package: Package, buildPath: string, kind: CrossKind = wasm32) =
+  let sourceDir = absolutePath(".")
+  let autoBuildDir = buildPath / "pkg" / package.name
+  mkDir(autoBuildDir)
+  let memArg = if kind == wasm64: " -m64" else: ""
+  let ldFlags = if kind == wasm64: "-m64" else: ""
+  let x264Host = if kind == wasm64: "x86_64-gnu" else: "i686-gnu"
+  withDir autoBuildDir:
+    case package.name
+    of "x264":
+      if not fileExists("config.mak"):
+        exec &"""CFLAGS="-matomics -msimd128 -mfma{memArg}" LDFLAGS="{ldFlags}" emconfigure {sourceDir}/configure --prefix="{buildPath}" --host={x264Host} --enable-static --disable-cli --disable-asm --disable-interlaced --disable-lsmash --disable-swscale --disable-ffms --extra-cflags="-pthread" """
+        # x264 has no wasm asm, so the C path is all we get. Its configure
+        # force-appends -fno-tree-vectorize last, which suppresses LLVM
+        # autovectorization. Rewrite it in-place to enable wasm SIMD and
+        # re-enable vectorization (must land after x264's flag to win).
+        let makPath = "config.mak"
+        writeFile(makPath, readFile(makPath).replace(
+          "-fno-tree-vectorize", "-msimd128 -mfma -ftree-vectorize"))
+      exec "emmake make -j4"
+      exec "make install"
+    of "libvpx":
+      if not fileExists("Makefile"):
+        exec &"""LDFLAGS="{ldFlags}" emconfigure {sourceDir}/configure --prefix="{buildPath}" --target=generic-gnu --disable-dependency-tracking --disable-runtime-cpu-detect --disable-examples --disable-unit-tests --disable-vp8-encoder --disable-vp9-encoder --enable-vp9-highbitdepth --extra-cflags="-matomics -msimd128 -mfma{memArg}" """
+      makeInstall()
+    of "zlib":
+      # zlib ships a hand-written configure (not autotools): it reads CFLAGS
+      # and LDFLAGS from the *environment*, not as positional args, so the
+      # flags must be exported. Without -m64 reaching the compiler it
+      # silently emits wasm32 objects that can't link into the wasm64 build.
+      # It also hard-codes AR=libtool whenever the build host is macOS,
+      # ignoring emconfigure's AR=emar (native libtool can't archive wasm
+      # objects); spoofing uname keeps it on the generic path.
+      if not fileExists("Makefile"):
+        exec &"""CFLAGS="-matomics -msimd128 -mfma{memArg}" LDFLAGS="{ldFlags}" emconfigure {sourceDir}/configure --prefix="{buildPath}" --static --uname=Linux """
+      makeInstall()
+    else:
+      let extraArgs = if package.name == "opus": @["--disable-rtcd"] else: @[]
+      if not fileExists("Makefile"):
+        let args = (package.buildArguments & extraArgs).join(" ")
+        exec &"""emconfigure {sourceDir}/configure --prefix="{buildPath}" --enable-static --disable-shared {args} CFLAGS="-matomics -msimd128 -mfma{memArg}" LDFLAGS="{ldFlags}" """
+      makeInstall()
+
+proc makeBuild(buildPath: string, kind: CrossKind) =
+  var envPrefix = ""
+  case kind
+  of winX64:
+    envPrefix = "CC=x86_64-w64-mingw32-clang AR=llvm-ar RANLIB=llvm-ranlib "
+  of winArm:
+    envPrefix = "CC=aarch64-w64-mingw32-clang AR=llvm-ar RANLIB=llvm-ranlib "
+  of armv7:
+    envPrefix = "CC=arm-linux-gnueabihf-gcc AR=arm-linux-gnueabihf-ar RANLIB=arm-linux-gnueabihf-ranlib "
+  of wasm32, wasm64:
+    envPrefix = "CC=emcc AR=emar RANLIB=emranlib "
+  of native:
+    discard
+
+  let picFlag = if kind == winX64 or kind == winArm: "" else: " PIC=1"
+  let wasmCflags =
+    case kind
+    of wasm32:
+      " CFLAGS=\"-matomics -msimd128 -mfma\""
+    of wasm64:
+      " CFLAGS=\"-matomics -msimd128 -mfma -m64\" LDFLAGS=\"-m64\""
+    else:
+      ""
+  exec &"{envPrefix}make clean"
+  exec &"{envPrefix}make lib{picFlag}{wasmCflags}"
+  exec &"{envPrefix}make install{picFlag}{wasmCflags} PREFIX=\"{buildPath}\""
+
+proc ffmpegSetup(buildPath: string): seq[Package] =
+  let kind =
+    if buildPath.endsWith("_winarm"): winArm
+    elif buildPath.endsWith("_win"): winX64
+    elif buildPath.endsWith("_armv7"): armv7
+    elif buildPath.endsWith("_wasm64"): wasm64
+    elif buildPath.endsWith("_wasm"): wasm32
+    else: native
+  let isWasm = kind == wasm32 or kind == wasm64
+  let packages = selectPackages(kind)
+
+  mkDir("ffmpeg_sources")
+  withDir "ffmpeg_sources":
+    for package in @[ffmpeg] & packages:
+      package.download()
+      package.extract()
+      if package.name == "ffmpeg":
+        if isWasm:
+          let codecDir = "ffmpeg" / "libavcodec"
+          cpFile(webCodecsDir / "webcodecsdec.c", codecDir / "webcodecsdec.c")
+          cpFile(webCodecsDir / "webcodecsenc.c", codecDir / "webcodecsenc.c")
+
+          let makefilePath = codecDir / "Makefile"
+          var makefile = readFile(makefilePath)
+          let makeNeedle = "OBJS-$(CONFIG_H264_DECODER)"
+          var webCodecsObjects = ""
+          for (config, spacing) in [
+            ("H264", " "),
+            ("AAC", "  "),
+            ("AV1", "  "),
+            ("VP8", "  "),
+            ("VP9", "  "),
+            ("HEVC", " "),
+          ]:
+            if "CONFIG_" & config & "_WEBCODECS_DECODER" notin makefile:
+              webCodecsObjects &= "OBJS-$(CONFIG_" & config &
+                "_WEBCODECS_DECODER)" & spacing & "+= webcodecsdec.o\n"
+          if webCodecsObjects != "":
+            let pos = makefile.find(makeNeedle)
+            if pos < 0:
+              raise newException(ValueError, "Could not patch FFmpeg libavcodec/Makefile")
+            let lineStart = makefile.rfind('\n', 0, pos) + 1
+            makefile.insert(webCodecsObjects, lineStart)
+            writeFile(makefilePath, makefile)
+
+          var webCodecsEncoderObjects = ""
+          for (config, spacing) in [
+            ("H264", " "),
+            ("AAC", "  "),
+            ("AV1", "  "),
+            ("VP8", "  "),
+            ("VP9", "  "),
+            ("HEVC", " "),
+          ]:
+            if "CONFIG_" & config & "_WEB_ENCODER" notin makefile:
+              webCodecsEncoderObjects &= "OBJS-$(CONFIG_" & config &
+                "_WEB_ENCODER)" & spacing & "+= webcodecsenc.o\n"
+          if webCodecsEncoderObjects != "":
+            let pos = makefile.find(makeNeedle)
+            if pos < 0:
+              raise newException(ValueError,
+                "Could not patch FFmpeg encoder Makefile")
+            let lineStart = makefile.rfind('\n', 0, pos) + 1
+            makefile.insert(webCodecsEncoderObjects, lineStart)
+            writeFile(makefilePath, makefile)
+
+          let codecsPath = codecDir / "allcodecs.c"
+          var codecs = readFile(codecsPath)
+          var codecsChanged = false
+          for codec in ["h264", "aac", "av1", "vp8", "vp9", "hevc"]:
+            let webCodecsDecoder = "ff_" & codec & "_webcodecs_decoder"
+            if webCodecsDecoder notin codecs:
+              let decoder = "extern const FFCodec ff_" & codec & "_decoder;"
+              if decoder notin codecs:
+                raise newException(ValueError,
+                  "Could not patch FFmpeg decoder declaration: " & codec)
+              codecs = codecs.replace(decoder,
+                decoder & "\nextern const FFCodec " & webCodecsDecoder & ";")
+              codecsChanged = true
+          if codecsChanged:
+            writeFile(codecsPath, codecs)
+
+          codecs = readFile(codecsPath)
+          codecsChanged = false
+          for (codec, anchor) in [
+            ("h264", "extern const FFCodec ff_h264_decoder;"),
+            ("aac", "extern const FFCodec ff_aac_encoder;"),
+            ("av1", "extern const FFCodec ff_av1_decoder;"),
+            ("vp8", "extern const FFCodec ff_vp8_decoder;"),
+            ("vp9", "extern const FFCodec ff_vp9_decoder;"),
+            ("hevc", "extern const FFCodec ff_hevc_decoder;"),
+          ]:
+            let webEncoder = "ff_" & codec & "_web_encoder"
+            if webEncoder notin codecs:
+              if anchor notin codecs:
+                raise newException(ValueError,
+                  "Could not patch FFmpeg encoder declaration: " & codec)
+              codecs = codecs.replace(anchor,
+                anchor & "\nextern const FFCodec " & webEncoder & ";")
+              codecsChanged = true
+          if codecsChanged:
+            writeFile(codecsPath, codecs)
+        continue
+
+      withDir package.name:
+        # x264 has no configure switch for AVX-512, so take it out of the
+        # assembly itself. patches/x264.patch zeroes X264_CPU_AVX512 to keep
+        # the dispatchers from referencing what is no longer assembled.
+        if package.name == "x264" and defined(macosx) and hostCPU == "amd64" and
+            kind == native:
+          exec "nim r -d:release --hints:off --skipParentCfg:on --skipProjCfg:on " &
+            "../../scripts/strip_avx512_asm.nim common/x86"
+
+        if package.buildSystem == "cmake":
+          if isWasm:
+            cmakeBuildWasm(package, buildPath, kind)
+          else:
+            cmakeBuild(package, buildPath, kind)
+        elif package.buildSystem == "meson":
+          mesonBuild(package, buildPath, kind)
+        elif package.buildSystem == "x265":
+          x265Build(buildPath, kind)
+        elif package.buildSystem == "make":
+          makeBuild(buildPath, kind)
+        elif isWasm:
+          autoconfBuildWasm(package, buildPath, kind)
+        else:
+          # Special handling for nv-codec-headers which doesn't use configure
+          if package.name == "nv-codec-headers":
+            exec &"make install PREFIX=\"{buildPath}\""
+          elif package.name == "amf-headers":
+            # Header-only: FFmpeg expects <AMF/core/Version.h>
+            exec &"rm -rf \"{buildPath}/include/AMF\" && mkdir -p \"{buildPath}/include\" && cp -r amf/public/include \"{buildPath}/include/AMF\""
+          else:
+            let sourceDir = absolutePath(".")
+            let autoBuildDir = buildPath / "pkg" / package.name
+            mkDir(autoBuildDir)
+            withDir autoBuildDir:
+              if not fileExists("Makefile") or package.name == "x264":
+                var args = package.buildArguments
+                var envPrefix = ""
+                if kind == winArm:
+                  if package.name == "libvpx":
+                    args.add("--target=arm64-win64-gcc")
+                  else:
+                    args.add("--host=aarch64-w64-mingw32")
+                  if package.name == "opus":
+                    args.add("--disable-rtcd")
+                  envPrefix = "CC=aarch64-w64-mingw32-clang CXX=aarch64-w64-mingw32-clang++ AR=llvm-ar STRIP=llvm-strip RANLIB=llvm-ranlib "
+                elif kind == armv7:
+                  if package.name == "libvpx":
+                    args.add("--target=armv7-linux-gcc")
+                  else:
+                    args.add("--host=arm-linux-gnueabihf")
+                  if package.name == "x264":
+                    # x264 ARM asm uses R_ARM_MOVW_ABS_NC; needs PIC to link
+                    # into FFmpeg's -fPIC test programs.
+                    args.add("--enable-pic")
+                  envPrefix = "CC=arm-linux-gnueabihf-gcc CXX=arm-linux-gnueabihf-g++ AR=arm-linux-gnueabihf-ar STRIP=arm-linux-gnueabihf-strip RANLIB=arm-linux-gnueabihf-ranlib "
+                  if package.name == "libvpx":
+                    envPrefix &= "CROSS=arm-linux-gnueabihf- "
+                elif kind == winX64:
+                  if package.name == "libvpx":
+                    args.add("--target=x86_64-win64-gcc")
+                  else:
+                    args.add("--host=x86_64-w64-mingw32")
+                  envPrefix = "CC=x86_64-w64-mingw32-clang CXX=x86_64-w64-mingw32-clang++ AR=llvm-ar STRIP=llvm-strip RANLIB=llvm-ranlib "
+                if package.name == "zlib" and kind != native:
+                  args.add "--uname=Linux"
+                if package.name != "x264":
+                  args.add "--disable-shared"
+                let cmd = &"{envPrefix}{sourceDir}/configure --prefix=\"{buildPath}\" --enable-static " & args.join(" ")
+                echo "RUN: ", cmd
+                exec cmd
+              makeInstall()
+  return packages
+
+
+func basicPcms(): seq[string] =
+  result.add "pcm_f32be,pcm_f32le,pcm_f64be,pcm_f64le".split(",")
+  for t in ["s", "u"]:
+    result.add &"pcm_{t}8"
+    for size in ["16", "24", "32", "64"]:
+      if t == "u" and size == "64": continue
+      result.add &"pcm_{t}{size}le"
+
+proc setupCommonFlags(packages: seq[Package], kind: CrossKind = native): string =
+  let enableParsers = "aac,aac_latm,ac3,amr,av1,dca,dnxhd,dvbsub,dvdsub,ffv1,flac,gif,h263,h264,hdr,hevc,mjpeg,mlp,mpeg4video,mpegaudio,mpegvideo,opus,png,pnm,prores,prores_raw,vorbis,vp3,vp8,vp9,webp".split(",")
+
+  var enableEncoders = "aac,aac_fixed,ac3,ac3_fixed,alac,ass,cfhd,dvbsub,dvdsub,dvvideo,ffv1,flac,gif,h263,h263p,hdr,libmp3lame,libopus,libx264,libx264rgb,movtext,mp2,mp2fixed,mpeg1video,mpeg2video,mpeg4,png,prores,prores_aw,prores_ks,srt,ssa,text,vorbis,webvtt".split(",")
+  enableEncoders &= basicPcms()
+  enableEncoders &= "pcm_bluray,pcm_s32le_planar,pcm_s24le_planar,pcm_s16be_planar,pcm_s16le_planar,pcm_s8_planar".split(",")
+
+  var enableMuxers = "ac3,latm,adts,lrc,aiff,m4v,asf,matroska,matroska_audio,ass,ast,mov,au,mp2,avi,mp3,avif,mp4,mpeg1system,caf,mpeg1video,mpeg2dvd,dv,mpeg2video,psp,sox,flac,spdif,flv,obu,srt,gif,oga,w64,h263,ogg,wav,h264,ogv,webm,hevc,oma,iamf,opus,ipod,webvtt,ismv".split(",")
+  enableMuxers &= basicPcms()
+
+  let enableDemuxers = enableMuxers & @["aac", "loas", "image2", "png_pipe", "mpegts",
+    "image_webp_pipe", "webp_anim"]
+
+  var filters = "aformat,abuffer,abuffersink,alphamerge,aresample,asetrate,atempo,anull,anullsrc,chromakey,colorkey,crop,drawbox,deesser,erosion,format,gblur,geq,hflip,lenscorrection,loudnorm,lut,lutrgb,lutyuv,maskedmerge,negate,overlay,pad,pixelize,rgbashift,rotate,scale,vflip,volume".split(",")
+
+  let isCrossWasm = kind == wasm32 or kind == wasm64
+  for package in packages:
+    if package.name == "libvpx" and not isCrossWasm:
+      enableEncoders &= ["libvpx_vp8", "libvpx_vp9"]
+    if package.name == "x265" and not isCrossWasm:
+      enableEncoders.add "libx265"
+    if package.name == "libsvtav1" and not isCrossWasm:
+      enableEncoders.add "libsvtav1"
+    if package.name == "amf-headers" and not isCrossWasm:
+      enableEncoders &= ["h264_amf", "hevc_amf", "av1_amf"]
+
+  let isMacNative = defined(macosx) and kind == native
+  let isWindows = kind in [winX64, winArm] or (defined(windows) and kind == native)
+  let isLinux = kind == armv7 or (defined(linux) and kind == native)
+
+  if not isCrossWasm:
+    if isMacNative:
+      enableEncoders.add "aac_at,alac_at,h264_videotoolbox,hevc_videotoolbox,prores_videotoolbox".split(",")
+    elif kind != armv7 and kind != winArm:
+      enableEncoders.add "av1_nvenc,h264_nvenc,hevc_nvenc"
+    if packages.anyIt(it.name == "libvpl"):
+      enableEncoders.add "av1_qsv,hevc_qsv,mjpeg_qsv,mpeg2_qsv,vc1_qsv,vp8_qsv,vp9_qsv,vvc_qsv"
+
+  var decodersOff = disableDecoders
+  if not isCrossWasm:
+    decodersOff &= "aac_webcodecs,av1_webcodecs,h264_webcodecs,hevc_webcodecs,vp8_webcodecs,vp9_webcodecs".split(",")
+
+  var commonFlags = &"""
+  --enable-version3 \
+  --enable-static \
+  --disable-shared \
+  --disable-programs \
+  --disable-doc \
+  --disable-network \
+  --disable-indevs \
+  --disable-outdevs \
+  --disable-xlib \
+  --disable-bsfs \
+  --disable-protocols \
+  --enable-protocol=file \
+  --disable-filters \
+  --enable-filter={filters.join(",")} \
+  --disable-decoder={decodersOff.join(",")} \
+  --disable-encoders \
+  --enable-encoder={enableEncoders.join(",")} \
+  --disable-demuxers \
+  --enable-demuxer={enableDemuxers.join(",")} \
+  --disable-muxers \
+  --enable-muxer={enableMuxers.join(",")} \
+  --disable-parsers \
+  --enable-parser={enableParsers.join(",")} \
+"""
+
+  for package in packages:
+    if package.ffFlag != "":
+      commonFlags &= &"  {package.ffFlag} \\\n"
+
+  if isMacNative and hostCPU == "amd64":
+    commonFlags &= "  --disable-avx512 \\\n"
+    commonFlags &= "  --disable-avx512icl \\\n"
+
+  if isCrossWasm:
+    commonFlags &= "  --enable-encoder=h264_web,aac_web,av1_web,vp8_web,vp9_web,hevc_web \\\n"
+  else:
+    if defined(arm) or defined(arm64) or kind == winArm or kind == armv7:
+      commonFlags &= "  --enable-neon \\\n"
+
+    if isMacNative:
+      commonFlags &= "  --enable-videotoolbox \\\n"
+      commonFlags &= "  --enable-audiotoolbox \\\n"
+      commonFlags &= "  --enable-avfoundation \\\n"
+      commonFlags &= "  --enable-indev=avfoundation \\\n"
+    else:
+      if isWindows:
+        commonFlags &= "  --enable-indev=dshow \\\n"
+      elif isLinux:
+        commonFlags &= "  --enable-alsa \\\n"
+        commonFlags &= "  --enable-indev=alsa \\\n"
+      if kind != armv7 and kind != winArm:
+        commonFlags &= "  --enable-nvenc \\\n"
+        commonFlags &= "  --enable-ffnvcodec \\\n"
+
+  commonFlags &= "--disable-autodetect"
+  return commonFlags
+
+proc setupDeps =
+  let (mesonOutput, mesonCode) = gorgeEx("command -v meson")
+  let (ninjaOutput, ninjaCode) = gorgeEx("command -v ninja")
+
+  var toInstall: seq[string] = @[]
+  if mesonCode != 0: toInstall.add "meson"
+  if ninjaCode != 0: toInstall.add "ninja"
+  if toInstall.len > 0:
+    exec "pip install " & toInstall.join(" ")
+
+task downloaddeps, "Download and Extract Cxx Dependencies":
+  let allPackages = @[ffmpeg, nvheaders, amfheaders, alsa, libvpl, whisper, lamer, opus, dav1d, x264, zlib, vpx, svtav1, x265, freetype, fribidi, harfbuzz, libass]
+  mkDir "ffmpeg_sources"
+  withDir "ffmpeg_sources":
+    for package in allPackages:
+      download(package)
+
+task makeff, "Build FFmpeg from source":
+  setupDeps()
+  let buildPath = nativeBuildPath
+
+  # Set PKG_CONFIG_PATH to include both standard and architecture-specific paths
+  var pkgConfigPaths = @[buildPath / "lib/pkgconfig"]
+  when defined(linux):
+    when defined(arm64):
+      pkgConfigPaths.add(buildPath / "lib/aarch64-linux-gnu/pkgconfig")
+    else:
+      pkgConfigPaths.add(buildPath / "lib/x86_64-linux-gnu/pkgconfig")
+    pkgConfigPaths.add(buildPath / "lib64/pkgconfig")
+    # Add common cmake install paths for pkg-config files
+    pkgConfigPaths.add(buildPath / "lib/cmake")
+    pkgConfigPaths.add(buildPath / "share/pkgconfig")
+  putEnv("PKG_CONFIG_PATH", pkgConfigPaths.join(":"))
+
+  let packages = ffmpegSetup(buildPath)
+
+  let ffmpegBuildDir = buildPath / "pkg" / "ffmpeg"
+  mkDir(ffmpegBuildDir)
+  withDir ffmpegBuildDir:
+    try:
+      exec &"""{ffmpegSrcDir}/configure --prefix="{buildPath}" \
+        --pkg-config-flags="--static" \
+        --extra-cflags="-I{buildPath}/include" \
+        --extra-ldflags="-L{buildPath}/lib" \
+        --extra-libs="-lpthread -lm -lstdc++" \""" & "\n" & setupCommonFlags(packages)
+    except OSError:
+      exec &"cat {ffmpegSrcDir}/ffbuild/config.log"
+      quit(1)
+    makeInstall()
+
+task makeffwin, "Build FFmpeg for Windows cross-compilation":
+  setupDeps()
+  putEnv("PKG_CONFIG_PATH", winBuildPath / "lib/pkgconfig")
+  let packages = ffmpegSetup(winBuildPath)
+
+  let ffmpegBuildDirWin = winBuildPath / "pkg" / "ffmpeg"
+  mkDir(ffmpegBuildDirWin)
+  withDir ffmpegBuildDirWin:
+    exec (&"""CC=x86_64-w64-mingw32-clang CXX=x86_64-w64-mingw32-clang++ AR=llvm-ar STRIP=llvm-strip RANLIB=llvm-ranlib PKG_CONFIG_PATH="{winBuildPath}/lib/pkgconfig" {ffmpegSrcDir}/configure --prefix="{winBuildPath}" \
+      --pkg-config=pkg-config \
+      --pkg-config-flags="--static" \
+      --extra-cflags="-I{winBuildPath}/include" \
+      --extra-ldflags="-L{winBuildPath}/lib" \
+      --extra-libs="-lpthread -lm -lstdc++" \
+      --arch=x86_64 \
+      --target-os=mingw32 \
+      --cross-prefix=x86_64-w64-mingw32- \
+      --enable-cross-compile \""" & "\n" & setupCommonFlags(packages, winX64))
+    makeInstall()
+
+task makewin, "Cross-compile to Windows (requires llvm-mingw)":
+  echo "Cross-compiling for Windows (64-bit)..."
+
+  if not dirExists(winBuildPath):
+    echo "FFmpeg for Windows not found. Run 'nimble makeffwin' first."
+  else:
+    # llvm-mingw, not gcc-mingw: gcc ICEs under LTO (GCC PR97822, open in 13-16)
+    exec "nim c -d:danger -d:flto --passL:-static --os:windows --cpu:amd64 --cc:clang " &
+         "--clang.exe:x86_64-w64-mingw32-clang " &
+         "--clang.linkerexe:x86_64-w64-mingw32-clang " &
+         "--out:auto-editor.exe src/main.nim"
+    stripProgram(winX64)
+
+task makeffwinarm, "Build FFmpeg for Windows ARM64 cross-compilation":
+  setupDeps()
+  let pkgConfigPath = winArmBuildPath  / "lib/pkgconfig"
+  putEnv("PKG_CONFIG_PATH", pkgConfigPath)
+  putEnv("PKG_CONFIG_LIBDIR", pkgConfigPath)
+
+  let packages = ffmpegSetup(winArmBuildPath)
+
+  let ffmpegBuildDirWinArm = winArmBuildPath / "pkg" / "ffmpeg"
+  mkDir(ffmpegBuildDirWinArm)
+  withDir ffmpegBuildDirWinArm:
+    exec (&"""CC=aarch64-w64-mingw32-clang CXX=aarch64-w64-mingw32-clang++ AR=llvm-ar STRIP=llvm-strip RANLIB=llvm-ranlib PKG_CONFIG_PATH="{pkgConfigPath}" PKG_CONFIG_LIBDIR="{pkgConfigPath}" {ffmpegSrcDir}/configure --prefix="{winArmBuildPath}" \
+      --pkg-config=pkg-config \
+      --pkg-config-flags="--static" \
+      --extra-cflags="-I{winArmBuildPath}/include" \
+      --extra-ldflags="-L{winArmBuildPath}/lib" \
+      --extra-libs="-lpthread -lm -lstdc++" \
+      --arch=aarch64 \
+      --target-os=mingw32 \
+      --cross-prefix=aarch64-w64-mingw32- \
+      --enable-cross-compile \""" & "\n" & setupCommonFlags(packages, winArm))
+    makeInstall()
+
+task makewinarm, "Cross-compile to Windows ARM64 (requires llvm-mingw)":
+  echo "Cross-compiling for Windows ARM64..."
+
+  if not dirExists(winArmBuildPath):
+    echo "FFmpeg for Windows ARM64 not found. Run 'nimble makeffwinarm' first."
+  else:
+    exec "nim c -d:danger -d:flto --passL:-static --os:windows --cpu:arm64 --cc:clang " &
+         "--clang.exe:aarch64-w64-mingw32-clang " &
+         "--clang.linkerexe:aarch64-w64-mingw32-clang " &
+         "--out:auto-editor.exe src/main.nim"
+    stripProgram(winArm)
+
+task makeffarmv7, "Build FFmpeg for Linux ARMv7 cross-compilation":
+  setupDeps()
+  let pkgConfigPath = armv7BuildPath / "lib/pkgconfig"
+  putEnv("PKG_CONFIG_PATH", pkgConfigPath)
+  putEnv("PKG_CONFIG_LIBDIR", pkgConfigPath)
+
+  let packages = ffmpegSetup(armv7BuildPath)
+
+  let ffmpegBuildDirArmv7 = armv7BuildPath / "pkg" / "ffmpeg"
+  mkDir(ffmpegBuildDirArmv7)
+  withDir ffmpegBuildDirArmv7:
+    try:
+      exec (&"""CC=arm-linux-gnueabihf-gcc CXX=arm-linux-gnueabihf-g++ AR=arm-linux-gnueabihf-ar STRIP=arm-linux-gnueabihf-strip RANLIB=arm-linux-gnueabihf-ranlib PKG_CONFIG_PATH="{pkgConfigPath}" PKG_CONFIG_LIBDIR="{pkgConfigPath}" {ffmpegSrcDir}/configure --prefix="{armv7BuildPath}" \
+        --pkg-config=pkg-config \
+        --pkg-config-flags="--static" \
+        --extra-cflags="-I{armv7BuildPath}/include -march=armv7-a -mfpu=neon-vfpv3 -mfloat-abi=hard" \
+        --extra-ldflags="-L{armv7BuildPath}/lib" \
+        --extra-libs="-lpthread -lm -lstdc++" \
+        --arch=arm \
+        --cpu=armv7-a \
+        --target-os=linux \
+        --cross-prefix=arm-linux-gnueabihf- \
+        --enable-cross-compile \""" & "\n" & setupCommonFlags(packages, armv7))
+    except OSError:
+      exec "cat ffbuild/config.log"
+      quit(1)
+    makeInstall()
+
+task makearmv7, "Cross-compile to Linux ARMv7 (requires arm-linux-gnueabihf toolchain)":
+  echo "Cross-compiling for Linux ARMv7..."
+
+  if not dirExists(armv7BuildPath):
+    echo "FFmpeg for Linux ARMv7 not found. Run 'nimble makeffarmv7' first."
+  else:
+    exec "nim c -d:danger -d:flto --passL:-static --os:linux --cpu:arm --cc:gcc " &
+         "--gcc.exe:arm-linux-gnueabihf-gcc " &
+         "--gcc.linkerexe:arm-linux-gnueabihf-gcc " &
+         "--passC:-march=armv7-a --passC:-mfpu=neon-vfpv3 --passC:-mfloat-abi=hard " &
+         "--out:auto-editor src/main.nim"
+    stripProgram(armv7)
+
+
+proc buildFFmpegForWasm(buildPath: string, kind: CrossKind) =
+  setupDeps()
+  putEnv("PKG_CONFIG_PATH", buildPath / "lib/pkgconfig")
+  mkDir(buildPath)
+
+  let packages = ffmpegSetup(buildPath)
+
+  let arch = if kind == wasm64: "x86_64" else: "x86_32"
+  let memArg = if kind == wasm64: " -m64" else: ""
+
+  let ffmpegBuildDir = buildPath / "pkg" / "ffmpeg"
+  mkDir(ffmpegBuildDir)
+  withDir ffmpegBuildDir:
+    exec (&"""PKG_CONFIG_PATH="{buildPath}/lib/pkgconfig" {ffmpegSrcDir}/configure --prefix="{buildPath}" \
+      --cc=emcc \
+      --cxx=em++ \
+      --ld=em++ \
+      --ar=emar \
+      --ranlib=emranlib \
+      --nm=emnm \
+      --pkg-config-flags="--static" \
+      --enable-cross-compile \
+      --target-os=none \
+      --arch={arch} \
+      --disable-x86asm \
+      --disable-inline-asm \
+      --enable-pthreads \
+      --disable-w32threads \
+      --disable-os2threads \
+      --extra-cflags="-I{buildPath}/include -matomics -msimd128 -mfma -pthread{memArg}" \
+      --extra-ldflags="-L{buildPath}/lib -matomics -msimd128 -pthread{memArg}" \""" & "\n" & setupCommonFlags(packages, kind))
+    makeInstall()
+
+task makeffwasm, "Build FFmpeg for WebAssembly (requires emscripten)":
+  buildFFmpegForWasm(wasmBuildPath, wasm32)
+
+task makeffwasm64, "Build FFmpeg for WebAssembly 64-bit (requires emscripten)":
+  buildFFmpegForWasm(wa64BuildPath, wasm64)
+
+task makewasm, "Compile to wasm32 (requires emscripten, wabt)":
+  echo "Compiling for wasm (32-bit)..."
+  if not dirExists("build_wasm"):
+    echo "FFmpeg for wasm not found. Run 'nimble makeffwasm' first."
+  else:
+    exec "nim c -d:danger -d:flto -d:emscripten --threads:on --os:linux --cpu:wasm32 " &
+        "--out:docs/src/auto-editor-web.js src/main.nim"
+    stripProgram(wasm32)
+
+task makewasm64, "Compile to wasm64 (requires emscripten, wabt)":
+  echo "Compiling for wasm (64-bit)..."
+  if not dirExists("build_wasm64"):
+    echo "FFmpeg for wasm64 not found. Run 'nimble makeffwasm64' first."
+  else:
+    exec "nim c -d:danger -d:flto -d:emscripten --threads:on --os:linux --cpu:wasm64 " &
+         "--out:docs/src/auto-editor-web64.js src/main.nim"
+    stripProgram(wasm64)

@@ -1,0 +1,135 @@
+import std/[os, strformat, strutils]
+import ../[av, cli, ffmpeg, log, transcribe]
+import ../util/fun
+import ../lib/dnorm16
+import ./help
+when defined(macosx) or defined(windows) or
+    (defined(linux) and not defined(emscripten)):
+  import ../mic
+
+var ctrlcStop = false
+proc onCtrlC() {.noconv.} =
+  ctrlcStop = true
+
+const whisperArgumentOptions = {
+  coLanguage, coFormat, coOutput, coQueue, coPrompt, coThreads, coThreshold,
+}
+
+assertArgumentOptions(whisperOptions, whisperArgumentOptions)
+
+proc main*(cArgs: seq[string]) =
+  var inputPath: string = ""
+  var model: string = ""
+  var isDebug = false
+  var splitWords = false
+  var language = "auto"
+  var translate = false # to English
+  var format = "text"
+  var formatExplicit = false
+  var output = "-"
+  var queue: int = 30
+  var prompt: string = ""
+  var threads: cint = 4
+  var threshold: float32 = 0.04
+
+  parseArgs(cArgs, whisperOptions, "<file|:mic> <model> [options]", "--"):
+    case expecting:
+    of coNone:
+      if inputPath == "":
+        inputPath = key
+      elif model == "":
+        model = key
+      else:
+        error "Got too many arguments\nUsage: <file|:mic> <model> [options]"
+    of coLanguage:
+      language = key
+    of coFormat:
+      format = key
+      formatExplicit = true
+    of coOutput:
+      output = key
+    of coQueue:
+      queue = (
+        try: parseInt(key)
+        except ValueError: error &"Invalid --queue: {key}"
+      )
+    of coPrompt:
+      prompt = key
+    of coThreads:
+      let n = (
+        try: parseInt(key)
+        except ValueError: error &"Invalid --threads: {key}"
+      )
+      if n < 1 or n > 1024:
+        error &"--threads must be in range [1, 1024], got: {key}"
+      threads = n.cint
+    of coThreshold:
+      threshold = parseThres(key).toFloat32
+    else:
+      discard
+    expecting = coNone
+
+  if inputPath == "":
+    error "A media file is needed"
+  if model == "":
+    error "A model is needed, you came find them here: https://huggingface.co/ggerganov/whisper.cpp\n" &
+      "Parakeet models also work: https://huggingface.co/ggml-org/parakeet-GGUF\n" &
+      "Or use 'apple' for the built-in macOS 26+ transcriber"
+  if model == "apple":
+    if translate:
+      error "--translate is not supported with the apple model"
+    if prompt != "":
+      error "--prompt is not supported with the apple model"
+  elif isParakeetModel(model):
+    if translate:
+      error "--translate is not supported with parakeet models"
+    if prompt != "":
+      error "--prompt is not supported with parakeet models"
+    if language != "auto":
+      error "--language is not supported with parakeet models (they detect it themselves)"
+
+  let isMic = (inputPath == ":mic")
+  # Install early so Ctrl-C is graceful even during the (slow) model load.
+  setControlCHook(onCtrlC)
+
+  if queue < 1 or queue > 86400:
+    error &"Invalid queue value: {queue}"
+  if output != "-" and not formatExplicit:
+    case output.splitFile.ext.toLowerAscii
+    of ".srt": format = "srt"
+    of ".json": format = "json"
+    of ".txt", ".text": format = "text"
+    else: discard
+  if format notin ["text", "srt", "json"]:
+    error &"Invalid format: {format}. Choices: text, srt, json"
+
+  av_log_set_level(if isDebug: AV_LOG_DEBUG else: AV_LOG_ERROR)
+
+  var fmtCtx: ptr AVFormatContext
+  var audioStream: ptr AVStream
+  var input: InputContainer
+
+  if isMic:
+    when defined(macosx) or defined(windows) or
+        (defined(linux) and not defined(emscripten)):
+      var micInput = openMic()
+      fmtCtx = micInput.formatContext
+      audioStream = micInput.audioStream
+      stderr.writeLine(&"Listening on \"{micInput.name}\"... (press Ctrl-C to stop)")
+    else:
+      error "Microphone capture (:mic) is not supported on this platform"
+  else:
+    input = (try: av.open(inputPath) except: error "Invalid media file")
+    if input.audio.len == 0:
+      error "No audio stream found"
+    audioStream = input.audio[0]
+    fmtCtx = input.formatContext
+
+  defer:
+    if isMic: avformat_close_input(addr fmtCtx)
+    else: input.close()
+
+  transcribe.run(fmtCtx, audioStream, model, language, translate, format, output,
+                 queue, threshold, prompt, threads, splitWords, isDebug, addr ctrlcStop)
+  if isMic:
+    stderr.writeLine("")

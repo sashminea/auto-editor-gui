@@ -1,0 +1,787 @@
+import std/[options, os, sets, sequtils, strformat, strutils, tables, terminal, times]
+when not defined(emscripten):
+  from std/browsers import openDefaultBrowser
+from std/math import round
+
+import ./[av, action, edit, ffmpeg, license, log, media, stats, timeline]
+import ./lib/editutil
+import ./util/[color, bar, fun, lang, rules, rational]
+
+import ./imports/[fcp7, json]
+import ./exports/[fcp7, fcp11, json, shotcut, kdenlive, otio]
+import ./render/[format, subtitle]
+
+proc freeActions*(args: mainArgs, tl: v3) =
+  ## CLI actions are copied into the timeline, so release each shared buffer
+  ## exactly once.
+  var freed: HashSet[int]
+  template freeOnce(a: Actions) =
+    let address = int(a)
+    if address > 1 and address notin freed:
+      freed.incl address
+      a.free()
+
+  for a in tl.effects:
+    freeOnce(a)
+  freeOnce(args.whenInactive)
+  freeOnce(args.whenActive)
+  for item in args.labeledWhens:
+    freeOnce(item.action)
+  for item in args.setAction:
+    freeOnce(item[0])
+
+
+func prefixEquals(s, expected: string, stop: int): bool {.raises: [].} =
+  if stop != expected.len:
+    return false
+  for i in 0 ..< stop:
+    if s[i] != expected[i]:
+      return false
+  true
+
+proc parseExportString*(exportStr: string): ExportSpec {.raises: [AutoEditorError].} =
+  result.name = "Auto-Editor Media Group"
+  result.version = "11"
+
+  let colonPos = exportStr.find(':')
+  let kindEnd = if colonPos == -1: exportStr.len else: colonPos
+  result.kind =
+    if exportStr.prefixEquals("", kindEnd): exAuto
+    elif exportStr.prefixEquals("default", kindEnd): exDefault
+    elif exportStr.prefixEquals("clip-sequence", kindEnd): exClipSequence
+    elif exportStr.prefixEquals("v1", kindEnd): exV1
+    elif exportStr.prefixEquals("v2", kindEnd): exV2
+    elif exportStr.prefixEquals("v3", kindEnd): exV3
+    elif exportStr.prefixEquals("premiere", kindEnd): exPremiere
+    elif exportStr.prefixEquals("resolve-fcp7", kindEnd): exResolveFcp7
+    elif exportStr.prefixEquals("final-cut-pro", kindEnd): exFinalCutPro
+    elif exportStr.prefixEquals("resolve", kindEnd): exResolve
+    elif exportStr.prefixEquals("shotcut", kindEnd): exShotcut
+    elif exportStr.prefixEquals("kdenlive", kindEnd): exKdenlive
+    elif exportStr.prefixEquals("premiere-otio", kindEnd): exPremiereOtio
+    else: error &"Unknown export format: {exportStr[0 ..< kindEnd]}"
+
+  if colonPos == -1:
+    return
+
+  let paramsStr = exportStr[colonPos+1..^1]
+
+  var i = 0
+  while i < paramsStr.len:
+    while i < paramsStr.len and paramsStr[i] == ' ':
+      inc i
+
+    if i >= paramsStr.len:
+      break
+
+    var paramStart = i
+    while i < paramsStr.len and paramsStr[i] notin {'=', ','}:
+      inc i
+
+    if i >= paramsStr.len or paramsStr[i] == ',':
+      error &"--export: expected 'key=value', got '{paramsStr[paramStart ..< i]}'"
+
+    let paramName = paramsStr[paramStart..i-1]
+    inc i
+
+    var value = ""
+    if i < paramsStr.len and paramsStr[i] == '"':
+      inc i
+      while i < paramsStr.len:
+        if paramsStr[i] == '\\' and i + 1 < paramsStr.len:
+          # Handle escape sequences
+          inc i
+          case paramsStr[i]:
+            of '"': value.add('"')
+            of '\\': value.add('\\')
+            else:
+              value.add('\\')
+              value.add(paramsStr[i])
+        elif paramsStr[i] == '"':
+          inc i
+          break
+        else:
+          value.add(paramsStr[i])
+        inc i
+    else:
+      # Unquoted value (until comma or end)
+      while i < paramsStr.len and paramsStr[i] != ',':
+        value.add(paramsStr[i])
+        inc i
+
+    case paramName:
+      of "name": result.name = value
+      of "version": result.version = value
+      else: error &"Unknown parameter: {paramName}"
+
+    if i < paramsStr.len and paramsStr[i] == ',':
+      inc i
+
+func normalizeRange(span: (PackedInt, PackedInt), tb: float64,
+    arrayLen: int): (int, int) {.raises: [].} =
+  var start = toTb(span[0], tb)
+  var stop = toTb(span[1], tb)
+  if start < 0:
+    start = max(0, arrayLen + start)
+  if stop < 0:
+    stop = max(0, arrayLen + stop)
+  return (start, stop)
+
+proc applyToRange(actionIndex: var seq[int], span: (PackedInt, PackedInt), tb: float64,
+    value: int, maxLen: int) {.raises: [AutoEditorError].} =
+  let len = if maxLen > 0: maxLen else: actionIndex.len
+  let (start, stop) = normalizeRange(span, tb, len)
+  if start >= stop:
+    error &"Invalid range: start (frame {start}) must come before stop (frame {stop})"
+  let cappedStop: int = min(stop, len)
+  if cappedStop > actionIndex.len:
+    actionIndex.setLen(cappedStop)
+  for i in start ..< min(stop, actionIndex.len):
+    actionIndex[i] = value
+
+proc exportExt(ext: string, myExport: ExportKind, hasVideo: bool): string =
+  ## The extension an export gets from `ext` (the one asked for, or the
+  ## input's): a timeline format's own; for media, `ext`, or mp4 when that
+  ## can't hold the video the export has (an audio-only input that gained a
+  ## video layer).
+  case myExport:
+    of exPremiere, exResolveFcp7: ".xml"
+    of exFinalCutPro, exResolve: ".fcpxml"
+    of exShotcut: ".mlt"
+    of exKdenlive: ".kdenlive"
+    of exPremiereOtio: ".otio"
+    of exV1: (if ext == ".json": ext else: ".v1")
+    of exV2: ".v2"
+    of exV3: ".v3"
+    of exDefault:
+      if hasVideo and not holdsVideo("x" & ext): ".mp4" else: ext
+    else: ext
+
+proc setOutput(userOut: string, `export`: ExportKind, path: string,
+    isUrl = false, hasVideo = false): (string, ExportKind) {.raises: [AutoEditorError].} =
+  var dir, name, ext: string
+  if userOut == "" or userOut == "-":
+    if path == "":
+      error "`--output` must be set." # When a timeline file is the input.
+    (dir, name, ext) = agSplitFile(path)
+    if isUrl:
+      ext = "" # Don't inherit the downloaded file's container.
+  else:
+    (dir, name, ext) = agSplitFile(userOut)
+
+  let root = dir / name
+
+  if ext == "":
+    # Use `mkv` as the default, because it can handle any encoder.
+    ext = (if isUrl or path == "": ".mkv" else: agSplitFile(path).ext)
+
+  var myExport = `export`
+  if myExport == exAuto:
+    case ext:
+      of ".xml": myExport = exPremiere
+      of ".fcpxml": myExport = exFinalCutPro
+      of ".mlt": myExport = exShotcut
+      of ".kdenlive": myExport = exKdenlive
+      of ".otio": myExport = exPremiereOtio
+      of ".json", ".v1": myExport = exV1
+      of ".v2": myExport = exV2
+      of ".v3": myExport = exV3
+      else: myExport = exDefault
+
+  # The default name copies the input's extension, so an audio-only input that
+  # gained a video layer would silently lose it: exportExt prefers mp4. If the
+  # user named the file, keep their choice and say what is being dropped.
+  let fitted = exportExt(ext, myExport, hasVideo)
+  if myExport == exDefault and fitted != ext and userOut != "" and userOut != "-" and
+      agSplitFile(userOut).ext != "":
+    warning &"{ext} can't hold a video stream; it will be dropped"
+  else:
+    ext = fitted
+
+  if userOut == "-":
+    return ("-", myExport)
+  if userOut == "":
+    return (&"{root}_ALTERED{ext}", myExport)
+
+  return (&"{root}{ext}", myExport)
+
+proc defaultOutput*(input: string, `export`: ExportKind, hasVideo: bool): string =
+  ## Where an export of `input` goes when no output is asked for.
+  setOutput("", `export`, input, hasVideo = hasVideo)[0]
+
+proc setVideoCodec(inCodec: string, src: MediaInfo, rule: Rules,
+    isUrl = false): string {.raises: [].} =
+  if inCodec != "auto":
+    return inCodec
+
+  let codecId =
+    if isUrl or src.v.len == 0: ID_H264 else: src.v[0].codecId
+
+  if rule.defaultVid == ID_NONE or rule.allowsCodec(codecId):
+    return $avcodec_get_name(codecId)
+  return $avcodec_get_name(rule.defaultVid)
+
+proc applyAdds(tl: var v3, args: var mainArgs,
+    interner: var StringInterner) {.raises: [AutoEditorError].} =
+  ## Inject `add:` overlays as new layers. Each spec overlays its source on
+  ## every base-layer (v[0]) clip whose section matches the spec's selector
+  ## (0 = silent, 1 = normal), spanning the same timeline range. With
+  ## `follow-base` (default), the overlay mirrors the base clip's source offset,
+  ## so it follows the base layer's cuts and stays time-synced like a second
+  ## camera angle (matching the app); with `follow-base=0` it restarts from frame
+  ## 0 each section (logo/gif use). Placement (when given) is carried by a `pos`
+  ## action in the overlay clip's effects group.
+  ##
+  ## An `add:` contributes every stream its source holds: a file with picture and
+  ## sound becomes a video layer plus one audio layer per audio stream (mirroring
+  ## the same sections, so the two stay in sync), an audio-only file or an audio
+  ## generator (`add:tone`) becomes audio layers alone, and a still image or a
+  ## video generator becomes a video layer alone.
+  if args.adds.len == 0:
+    return
+
+  func isAudioGen(spec: AddSpec): bool =
+    spec.generator.len > 0 and spec.generator.split(':')[0] in audioGeneratorActions
+
+  # Probe each source up front: what it holds decides which layers it gets, and
+  # a soundless spec must not drag in a video canvas it does not need.
+  var mis = newSeq[MediaInfo](args.adds.len)
+  var soundOnly = newSeq[bool](args.adds.len)
+  for i, spec in args.adds:
+    if spec.generator.len > 0:
+      soundOnly[i] = isAudioGen(spec)
+    else:
+      mis[i] = initMediaInfo(spec.path)
+      soundOnly[i] = mis[i].v.len == 0
+
+  # Audio-only timeline: synthesize a background base video track so the
+  # overlays have a canvas — but only if some kept section matches an add's
+  # selector. With no "active" portion (e.g. `--edit all` + `-w:1 add`), there
+  # is nothing to draw on, so no video stream is produced.
+  if tl.v.len == 0 and soundOnly.anyIt(not it):
+    if tl.a.len == 0:
+      return
+    var matches = false
+    for i, spec in args.adds:
+      if soundOnly[i]: continue # no picture, so it needs no canvas
+      for clip in tl.a[0]:
+        if clip.effects.int == spec.selector:
+          matches = true
+          break
+      if matches: break
+    if not matches:
+      return
+    var base: seq[Clip]
+    for clip in tl.a[0]:
+      base.add Clip(src: nil, start: clip.start, dur: clip.dur,
+        offset: clip.offset, effects: clip.effects, stream: 0)
+    tl.langs.insert(toLang("und"), 0) # video lang precedes audio langs
+    tl.v.add base
+
+  # Every spec mirrors the same base sections. Snapshot the layer: the loop
+  # appends to both v and a, and a[0] would otherwise start naming an added one.
+  let refLayer = (if tl.v.len > 0: tl.v[0]
+                  elif tl.a.len > 0: tl.a[0]
+                  else: newSeq[Clip]())
+
+  for i, spec in args.adds:
+    let audioGen = isAudioGen(spec)
+    if audioGen and spec.hasPos:
+      error "add: " & spec.generator.split(':')[0] & " is audio, it cannot be placed"
+    # A generator layer has no source; the renderer gives it a clear canvas.
+    let srcPtr = (if spec.generator.len > 0: nil else: interner.intern(spec.path))
+    # The overlay's effects group: an optional `pos` placement action followed by
+    # any actions chained after `add:` (which apply to this layer, not the base).
+    var acts: seq[Action]
+    if spec.hasPos:
+      acts.add Action(kind: actPos, pxKf: spec.xKf, pyKf: spec.yKf,
+        pscaleKf: spec.scaleKf)
+    var group = aNil
+    try:
+      if spec.generator.len > 0:
+        # First, so the chained actions operate on what it drew.
+        acts.add parseAction(spec.generator)
+      if spec.effects.len > 0:
+        block:
+          let parsed = parseActions(spec.effects)
+          defer: parsed.free()
+          for a in parsed:
+            acts.add a
+      if acts.len > 0:
+        group = newActions(acts)
+    except ActionParseError as e:
+      error e.msg
+    var idx = tl.effects.find(group)
+    if idx == -1:
+      tl.effects.add group
+      idx = tl.effects.len - 1
+    else:
+      group.free()
+    let eIdx = uint32(idx)
+    var track: seq[Clip]
+    # A generator has no source timeline, so `offset` (and `follow-base` with it)
+    # is meaningless for one: it renders from its position on the timeline.
+    let follows = spec.followBase and spec.generator.len == 0
+    for clip in refLayer:
+      if clip.effects.int == spec.selector:
+        track.add Clip(src: srcPtr, start: clip.start, dur: clip.dur,
+          offset: (if follows: clip.offset else: 0), effects: eIdx, stream: 0)
+    if track.len == 0:
+      continue
+
+    if not soundOnly[i]:
+      tl.langs.insert(toLang("und"), tl.v.len) # keep video langs before audio
+      tl.v.add track
+
+    # An added layer is an overlay, so its sound has to be heard over the base
+    # rather than written beside it as a second stream (which .wav/.mp3 can't
+    # hold). Audio langs come last, so append.
+    if audioGen:
+      tl.langs.add toLang("und")
+      tl.a.add track
+      args.mixAudioStreams = true
+    else:
+      # The overlay's own audio, one layer per stream, on the same sections as
+      # its picture so the two stay in sync.
+      for stream in 0 ..< mis[i].a.len:
+        var atrack = track
+        for clip in atrack.mitems:
+          clip.stream = int16(stream)
+        tl.langs.add mis[i].a[stream].lang
+        tl.a.add atrack
+        args.mixAudioStreams = true
+  tl.updateNumberOfSrc()
+
+proc applyLayers(tl: var v3, args: var mainArgs, interner: var StringInterner) =
+  ## Composite `args.layers` over the edit as the desktop app's
+  ## buildOverlayJson does: the last layer lowest, the first on top, each
+  ## clamped to [start, finish) of the output.
+  if args.layers.len == 0 or (tl.v.len == 0 and tl.a.len == 0):
+    return
+  let base = (if tl.v.len > 0: tl.v[0] else: tl.a[0])
+  var total = 0'i64
+  for clip in base: total = max(total, clip.start + clip.dur)
+
+  proc group(tl: var v3, actions: seq[Action]): uint32 =
+    let g = newActions(actions)
+    let found = tl.effects.find(g)
+    if found >= 0:
+      g.free()
+      found.uint32
+    else:
+      tl.effects.add g
+      uint32(tl.effects.len - 1)
+
+  for li in countdown(args.layers.high, 0):
+    let spec = args.layers[li]
+    let first = clamp(spec.start, 0, total)
+    let last = clamp((if spec.finish < 0: total else: spec.finish), first, total)
+    if last <= first: continue
+    var own: seq[Action]
+    if spec.effects.len > 0:
+      try:
+        let parsed = parseActions(spec.effects)
+        defer: parsed.free()
+        for a in parsed: own.add a
+      except ActionParseError as e:
+        error e.msg
+    let src = interner.intern(spec.path)
+    var track: seq[Clip]
+    if spec.followCuts:
+      # The base's sections, speeds included, so the layer stays in step
+      # with the source it's laid over.
+      var groups: Table[uint32, uint32]
+      for clip in base:
+        let a = max(clip.start, first)
+        let b = min(clip.start + clip.dur, last)
+        if b <= a: continue
+        if clip.effects notin groups:
+          var acts: seq[Action]
+          for x in tl.effects[clip.effects]: acts.add x
+          acts.add own
+          groups[clip.effects] = tl.group(acts)
+        # Offsets are already in speed-scaled frames, so a trim of k output
+        # frames moves the offset by k.
+        track.add Clip(src: src, start: a, dur: b - a,
+          offset: clip.offset + (a - clip.start), effects: groups[clip.effects])
+    else:
+      track.add Clip(src: src, start: first, dur: last - first, offset: first,
+        effects: tl.group(own))
+
+    let mi = initMediaInfo(spec.path)
+    if mi.v.len > 0:
+      tl.langs.insert(toLang("und"), tl.v.len) # keep video langs before audio
+      tl.v.add track
+    # Its sound is heard over the base, like an `add:` layer's.
+    for stream in 0 ..< mi.a.len:
+      var atrack = track
+      for clip in atrack.mitems: clip.stream = int16(stream)
+      tl.langs.add mi.a[stream].lang
+      tl.a.add atrack
+      args.mixAudioStreams = true
+  tl.updateNumberOfSrc()
+
+type BuiltTimeline* = object
+  tl*: v3
+  usePath*: string ## the media input to name outputs after, if any
+  mi*: MediaInfo
+
+proc buildTimeline*(args: var mainArgs, audio: AudioSettings,
+    interner: var StringInterner, bar: Bar): BuiltTimeline =
+  ## Analyze the inputs and decide every cut without exporting anything.
+  ## Release with `freeActions(args, result.tl)` when done.
+  var tlV3: v3
+  var usePath = ""
+  var mi: MediaInfo
+  if args.inputs.len == 0 and not stdin.isatty():
+    let stdinContent = readAll(stdin)
+    tlV3 = readJson(stdinContent, interner)
+    tlV3.applyArgs(args, audio)
+  else:
+    if args.inputs.len == 0:
+      error "You need to give auto-editor an input file."
+    let input = args.inputs[0]
+    let inputExt = agSplitFile(input).ext
+
+    if inputExt in [".v1", ".v2", ".v3", ".json"]:
+      tlV3 = readJson(readFile(input), interner)
+      tlV3.applyArgs(args, audio)
+    elif inputExt == ".xml":
+      tlV3 = fcp7ReadXml(input, interner)
+      tlV3.applyArgs(args, audio)
+      usePath = input
+    else:
+      usePath = input
+      var tb = AVRational(num: 30, den: 1)
+      if args.frameRate != AVRational(num: 0, den: 0):
+        tb = args.frameRate
+
+      let bg = args.background.get(RGBColor(red: 0, green: 0, blue: 0))
+      var tlInitialized = false
+      var concatOffset = 0 # where this input starts, inputs laid end to end
+
+      for i in 0 ..< args.inputs.len:
+        var container = (try: av.open(args.inputs[i]) except IOError as e: error e.msg)
+        defer: container.close()
+
+        if i == 0 and args.frameRate == AVRational(num: 0, den: 0):
+          if container.video.len > 0:
+            let avgFr = container.video[0].avg_frame_rate
+            if avgFr.isValid:
+              tb = makeSaneTimebase(avgFr)
+
+        var labels = interpretEdit(args, container, args.inputs[i], tb, bar)
+        let tbf = tb.float64
+        let startMargin = toTb(args.margin[0], tbf)
+        let endMargin = toTb(args.margin[1], tbf)
+        let mincut = toTb(args.smooth[0], tbf)
+        let minclip = toTb(args.smooth[1], tbf)
+
+        # Margin and smoothing act on the binary keep/cut boundary (active = any
+        # non-silent label). Run them on that mask, then fold the result back into the
+        # labels: where margin/mincut turned silence active, call it label 1 (normal);
+        # where minclip cut a short active clip, set it silent (0). Labels 0/1 alone
+        # round-trip through this mask unchanged.
+        var active = newSeq[bool](labels.len)
+        for i in 0 ..< labels.len:
+          active[i] = labels[i] != 0'u8
+
+        mutMargin(active, startMargin, endMargin)
+        smoothing(active, mincut, minclip)
+
+        for i in 0 ..< labels.len:
+          if not active[i]:
+            labels[i] = 0'u8
+          elif labels[i] == 0'u8:
+            labels[i] = 1'u8
+
+        # actionMap is indexed by label: 0 = silent, 1 = normal, >= 2 come from
+        # --when:N (defaulting to aNil = keep). --set-action ranges append unique
+        # indices beyond maxLabel below, so they never collide with a label.
+        var maxLabel = 1
+        for le in args.labeledEdits:
+          maxLabel = max(maxLabel, le.label)
+        for lw in args.labeledWhens:
+          maxLabel = max(maxLabel, lw.label)
+        var actionMap = newSeq[Actions](maxLabel + 1)
+        actionMap[0] = args.whenInactive
+        actionMap[1] = args.whenActive
+        for lw in args.labeledWhens:
+          actionMap[lw.label] = lw.action
+        var actionIndex: seq[int] = labels.map(proc(x: uint8): int = int(x))
+
+        var conLen = 0
+        proc getConLen(): int =
+          if conLen == 0: conLen = int(round((mediaLength(container) * tb).float64))
+          conLen
+
+        for sIdx in 0 ..< args.setAction.len:
+          let actionRange = args.setAction[sIdx]
+          let span = (actionRange[1], actionRange[2])
+          # A set-action range is an explicit override, conceptually distinct
+          # from the `-w:0`/`-w:1` (silent/normal) sections. Give it a unique
+          # effects index (never deduping into indices 0/1) so an `add` selector
+          # matches only what it should: `-w:1 add` overlays genuine active
+          # sections, not a `--set-action`/`--add-in` range, and a set-action's
+          # own `add` matches just that range.
+          actionMap.add actionRange[0]
+          let aIdx = actionMap.len - 1
+          if args.setActionConcat:
+            # An editor's range, over the inputs end to end: only its part on
+            # this input applies, in this input's frames.
+            let lo = max(toTb(span[0], tbf) - concatOffset, 0)
+            let hi = min(toTb(span[1], tbf) - concatOffset, labels.len)
+            if hi > lo:
+              applyToRange(actionIndex, (pack(false, lo), pack(false, hi)), tbf, aIdx,
+                getConLen())
+          else:
+            applyToRange(actionIndex, span, tbf, aIdx, getConLen())
+          if i == 0:
+            for a in args.adds.mitems:
+              if a.setActionRef == sIdx:
+                a.selector = aIdx
+
+        let inputMi = initMediaInfo(container.formatContext, args.inputs[i])
+
+        if not tlInitialized:
+          mi = inputMi
+          tlV3 = initLinearTimeline(interner.intern(args.inputs[i]), tb, bg, mi,
+              actionMap, actionIndex)
+          tlInitialized = true
+        else:
+          appendLinearTimeline(tlV3, interner.intern(args.inputs[i]), inputMi,
+            actionIndex)
+        # As an editor's plan lays the inputs out (planEdit): by their analysis.
+        concatOffset += labels.len
+
+      applyAdds(tlV3, args, interner)
+      applyLayers(tlV3, args, interner)
+      tlV3.applyArgs(args, audio)
+      if args.transition.getNumber > 0:
+        tlV3.addDissolveTransitions(
+          toTb(args.transition, tlV3.tb.float).int64,
+          toTb(args.transitionMinCut, tlV3.tb.float).int64)
+      elif args.placedTransitions.len > 0:
+        tlV3.placeTransitions(args.placedTransitions)
+
+  BuiltTimeline(tl: tlV3, usePath: usePath, mi: mi)
+
+type EditPlan* = object
+  ## Every cut of an edit, without rendering it.
+  tb*: AVRational
+  chunks*: seq[tuple[start, stop: int64, speed: float64, actions: seq[string]]]
+    ## Frames at `tb`, the inputs' frames laid end to end; speed 99999 is a
+    ## cut. `actions` is the section's chain as auto-editor writes it, e.g.
+    ## @["speed:2.0", "volume:0.5"], @["cut"], or empty to leave it as is.
+  sourceFrames*: seq[int64] ## each input's length, in that order
+
+proc planEdit*(args: var mainArgs): EditPlan =
+  ## Decide every cut without rendering anything. Layers and placed
+  ## transitions are dropped from `args`: they'd make the edit more than a
+  ## list of cuts. Frees `args`' actions, as `editMedia` does.
+  args.layers = @[]
+  args.placedTransitions = @[]
+  var interner: StringInterner
+  defer: interner.cleanup()
+  let built = buildTimeline(args, AudioSettings(), interner,
+    initBar(BarType.none))
+  defer: freeActions(args, built.tl)
+  if not built.tl.isLinear:
+    error "This edit can't be shown as a simple list of cuts"
+  result = EditPlan(tb: built.tl.tb)
+  # Each input's chunks count from its own frame 0; lay them end to end so
+  # the inputs share one frame space.
+  var offset, prevEnd = 0'i64
+  for clip in built.tl.clips2:
+    let (start, stop) = (clip.start, clip.`end`)
+    if start == 0 and prevEnd > 0:
+      result.sourceFrames.add prevEnd
+      offset += prevEnd
+    # The speed as v1Chunks reckons it, beside the whole chain.
+    let group = built.tl.effects[clip.effect]
+    var speed = 1.0
+    var actions: seq[string]
+    if group.isCut:
+      speed = 99999.0
+      actions = @["cut"]
+    else:
+      for a in group:
+        if a.kind == actSpeed: speed *= a.val.float64
+        actions.add $a
+    result.chunks.add (start + offset, stop + offset, speed, actions)
+    prevEnd = stop
+  if prevEnd > 0: result.sourceFrames.add prevEnd
+
+proc editMedia*(args: var mainArgs, inputVideo: VideoSettings, audio: AudioSettings,
+    startTime: float = log.start) =
+  av_log_set_level(AV_LOG_QUIET)
+
+  var tlV3: v3
+  var interner: StringInterner
+  var output: string
+  var usePath: string = ""
+  var mi: MediaInfo
+  defer: interner.cleanup()
+  defer: freeActions(args, tlV3)
+
+  if args.progress == BarType.machine and args.output != "-":
+    conwrite "Starting"
+
+  let bar = initBar(args.progress)
+  # Early returns and errors too: in a program that outlives the job, the
+  # bar's thread would keep reading it after it's freed.
+  defer: bar.destroy()
+
+  let built = buildTimeline(args, audio, interner, bar)
+  tlV3 = built.tl
+  usePath = built.usePath
+  mi = built.mi
+
+  var exportKind: ExportKind
+  var tlName, fcpVersion: string
+  let hasVideo = tlV3.v.len > 0 and not args.vn
+  if args.`export`.kind == exAuto:
+    (output, exportKind) = setOutput(args.output, exAuto, usePath, args.urlInput,
+      hasVideo)
+    tlName = args.`export`.name
+    fcpVersion = args.`export`.version
+  else:
+    exportKind = args.`export`.kind
+    tlName = args.`export`.name
+    fcpVersion = args.`export`.version
+    (output, _) = setOutput(args.output, exportKind, usePath, args.urlInput,
+      hasVideo)
+
+  if args.preview:
+    preview(tlV3)
+    return
+
+  # Timeline/project exports that draw from more than one source remain a paid
+  # feature. Rendered media is handled in makeMedia, where an unlicensed render
+  # can continue at SD resolution. This also covers timelines imported from a
+  # file/stdin, which never pass through the CLI-level checks.
+  if tlV3.numberOfSrc > 1 and
+      exportKind notin {exDefault, exClipSequence}:
+    requireLicense(args, "export a timeline with multiple sources")
+
+  case exportKind:
+  of exV1, exV2, exV3:
+    exportJsonTl(tlV3, exportKind, output)
+    return
+  of exPremiere:
+    fcp7WriteXml(tlName, output, false, tlV3)
+    return
+  of exResolveFcp7:
+    # Resolve reads only a file's first audio stream from FCP7 XML
+    # (sourcetrack/trackindex is not honored across streams), so split
+    # multi-track audio into per-stream wavs like the fcpxml resolve export.
+    tlV3.setStreamTo0(interner)
+    fcp7WriteXml(tlName, output, true, tlV3)
+    return
+  of exFinalCutPro:
+    fcp11WriteXml(tlName, fcpVersion, output, false, tlV3)
+    return
+  of exResolve:
+    tlV3.setStreamTo0(interner)
+    fcp11WriteXml(tlName, fcpVersion, output, true, tlV3)
+    return
+  of exShotcut:
+    shotcutWriteMlt(output, tlV3)
+    return
+  of exKdenlive:
+    kdenliveWrite(output, tlV3)
+    return
+  of exPremiereOtio:
+    otioWrite(tlName, output, tlV3)
+    return
+  of exDefault, exClipSequence:
+    discard
+  of exAuto:
+    error "Internal error: unresolved automatic export format"
+
+  if output == "-":
+    error "Exporting media files to stdout is not supported."
+
+  let rule = initRules(output)
+  var video = inputVideo
+  video.codec = setVideoCodec(video.codec, mi, rule, args.urlInput)
+  let cache = newMediaCache()
+  defer: cache.close()
+
+  if exportKind == exClipSequence:
+    if not tlV3.isLinear:
+      error "Timeline too complex to use clip-sequence export"
+
+    func appendFilename(path, val: string): string =
+      let (dir, name, ext) = agSplitFile(path)
+      return (dir / name) & val & ext
+
+    var clips2: seq[Clip2] = @[]
+    for clip in tlV3.clips2:
+      if not tlV3.effects[clip.effect].isCut:
+        clips2.add(clip)
+
+    let unique = tlV3.uniqueSources()
+    if unique.len > 1:
+      error "clip-sequence export only supports one input source"
+    var src: ptr string
+    for u in unique:
+      src = u
+      break
+    if src == nil:
+      error "Trying to render an empty timeline"
+
+    let mi = initMediaInfo(cache.getContainer(src).formatContext, src[])
+
+    for clipNum, clip2 in clips2.pairs:
+      var myTimeline = toNonLinear2(src, tlV3.tb, mi, @[clip2], tlV3.effects)
+      applyArgs(myTimeline, args, audio)
+      makeMedia(args, video, audio, myTimeline, appendFilename(output, &"-{clipNum}"), rule,
+        bar, cache)
+  else:
+    makeMedia(args, video, audio, tlV3, output, rule, bar, cache)
+
+  # Retiming embedded subtitles is handled by makeMedia. Also retime every
+  # subtitle-only sibling of each original media input into its own sidecar.
+  for input in args.inputs:
+    let (inputDir, inputName, _) = agSplitFile(input)
+    var inputLayer: seq[Clip]
+    let baseLayer =
+      if tlV3.v.len > 0: tlV3.v[0]
+      elif tlV3.a.len > 0: tlV3.a[0]
+      else: @[]
+    for clip in baseLayer:
+      if clip.src != nil and clip.src[] == input:
+        inputLayer.add clip
+
+    if inputLayer.len == 0:
+      continue
+
+    for sibling in walkFiles((inputDir / inputName) & ".*"):
+      if sibling == input:
+        continue
+      var sidecar: InputContainer
+      try:
+        sidecar = av.open(sibling)
+      except IOError:
+        continue
+      let isSubtitleOnly = sidecar.subtitle.len > 0 and
+        sidecar.video.len == 0 and sidecar.audio.len == 0
+      sidecar.close()
+      if not isSubtitleOnly:
+        continue
+
+      let (subDir, subName, subExt) = agSplitFile(sibling)
+      makeAlteredSubtitle(sibling, (subDir / subName) & "_ALTERED" & subExt,
+        inputLayer, tlV3.tb)
+
+  bar.destroy()
+
+  let seconds = round(epochTime() - startTime, 2)
+  notice &"Finished. took {seconds} seconds ({toTimecode(seconds, Code.display)})"
+
+  if args.noOpen:
+    discard
+  elif args.open:
+    when not defined(emscripten):
+      openDefaultBrowser(output)

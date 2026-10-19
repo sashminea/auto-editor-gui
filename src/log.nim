@@ -1,0 +1,283 @@
+import std/[envvars, options, os, strformat, tables, times]
+when not defined(emscripten):
+  import std/strutils
+
+import ./[action, cli, editexpr]
+export editexpr
+import ./util/[color, rational, term]
+
+type
+  AutoEditorError* = object of CatchableError
+    ## Raised by `error`. The CLI prints it and exits; library callers
+    ## catch it and keep running.
+
+  LogHook* = proc (msg: string) {.nimcall, gcsafe, raises: [].}
+
+  BarType* = enum
+    modern, classic, ascii, machine, none
+  ExportKind* = enum
+    exAuto, exDefault, exClipSequence, exV1, exV2, exV3, exPremiere, exResolveFcp7,
+    exFinalCutPro, exResolve, exShotcut, exKdenlive, exPremiereOtio
+  ExportSpec* = object
+    kind*: ExportKind
+    name*: string
+    version*: string
+
+  PackedInt* = distinct int64
+
+func `$`*(kind: ExportKind): string {.raises: [].} =
+  case kind
+  of exAuto: ""
+  of exDefault: "default"
+  of exClipSequence: "clip-sequence"
+  of exV1: "v1"
+  of exV2: "v2"
+  of exV3: "v3"
+  of exPremiere: "premiere"
+  of exResolveFcp7: "resolve-fcp7"
+  of exFinalCutPro: "final-cut-pro"
+  of exResolve: "resolve"
+  of exShotcut: "shotcut"
+  of exKdenlive: "kdenlive"
+  of exPremiereOtio: "premiere-otio"
+
+func pack*(flag: bool, number: int64): PackedInt {.raises: [].} =
+  let maskedNumber = number and 0x7FFFFFFFFFFFFFFF'i64
+  let flagBit = if flag: 0x8000000000000000'i64 else: 0'i64
+  PackedInt(flagBit or maskedNumber)
+
+func getFlag*(packed: PackedInt): bool {.raises: [].} =
+  int64(packed) < 0
+
+func getNumber*(packed: PackedInt): int64 {.raises: [].} =
+  let raw = int64(packed) and 0x7FFFFFFFFFFFFFFF'i64
+  if (raw and 0x4000000000000000'i64) != 0:
+    raw or 0x8000000000000000'i64
+  else:
+    raw
+
+type
+  NormKind* = enum
+    nkNull, nkEbu, nkPeak
+  Norm* = object
+    case kind*: NormKind
+    of nkNull:
+      discard
+    of nkEbu:
+      i*: float32    # -70.0 to 5.0, default -24.0
+      lra*: float32  # 1.0 to 50.0, default 7.0
+      tp*: float32   # -9.0 to 0.0, default -2.0
+      gain*: float32 # -99.0 to 99.0, default 0.0
+    of nkPeak:
+      t*: float32    # -99.0 to 0.0, default -8.0
+
+func `==`*(a, b: Norm): bool {.raises: [].} =
+  if a.kind != b.kind: return false
+  case a.kind
+  of nkNull: true
+  of nkEbu: a.i == b.i and a.lra == b.lra and a.tp == b.tp and a.gain == b.gain
+  of nkPeak: a.t == b.t
+
+type LayerSpec* = object
+  ## An overlay layer as the desktop app models it: a file composited over the
+  ## edit between two output frames. Unlike `add:`, it isn't tied to a kind
+  ## of section, so it's library-only, with no CLI syntax.
+  path*: string
+  start*: int64 # output frames, on the edit's timebase
+  finish*: int64 = -1 # output frames; -1 runs to the end of the edit
+  followCuts*: bool = true # read at the base's source offsets, skipping and
+                           # speeding up with it, vs. play straight through
+  effects*: string # atf-8 actions applied to this layer
+
+type AddSpec* = object
+  ## A "virtual" `add:` action: overlay an image/video onto the sections whose
+  ## effects index matches `selector`. It does not become an atf-8 effect;
+  ## conductor injects it as an overlay layer in the timeline. For `--when-*`,
+  ## `selector` is the section's index (0 = silent, 1 = normal). For
+  ## `--set-action`, `setActionRef` is the index into `setAction` and conductor
+  ## fills in `selector` with the unique effects index assigned to that range.
+  selector*: int
+  setActionRef*: int = -1
+  path*: string
+  generator*: string # `add:confetti...`: the action painting a source-less
+                     # layer, instead of a file to overlay. `path` is empty.
+  hasPos*: bool # whether x:y:scale were given (else origin, native size)
+  xKf*, yKf*, scaleKf*: seq[float32] # placement ramps (len 1 = static), fed to pos
+  followBase*: bool = true # mirror the base clip's offset (stay time-synced) vs.
+                             # restart from frame 0 each kept section (logo/gif use)
+  effects*: string # actions chained after `add:` — applied to this overlay
+                     # layer (not the base), as a comma-separated atf-8 string
+
+type PlacedTransition* = object
+  ## A dissolve an editor placed on a linear edit, in output frames; the
+  ## alignment is 0 start, 1 center, 2 end at `at`. Video goes on the first
+  ## video track, audio on every audio track.
+  at*, dur*: int64
+  align*: int
+  video*: bool
+
+type VideoSettings* = object
+  codec*: string = "auto"
+  profile*: string = ""
+  preset*: string = ""
+  pixFmt*: string = ""
+  bitrate*: int = -1
+  gop*: int = -1
+  scale*: float = 1.0
+  crf*: int8 = -1
+  scaleSet*: bool = false
+
+type AudioSettings* = object
+  codec*: string = "auto"
+  layout*: string = ""
+  bitrate*: int = -1
+  normalize*: Norm = Norm(kind: nkNull)
+
+type mainArgs* = object
+  inputs*: seq[string]
+
+  # Editing Options
+  margin*: (PackedInt, PackedInt) = (pack(true, 200), pack(true, 200)) # 0.2s
+  smooth*: (PackedInt, PackedInt) = (pack(true, 200), pack(true, 100)) # 0.2s,0.1s
+  edit*: EditExpr = edit(audioMethod())
+  whenInactive*: Actions = aCut
+  whenActive*: Actions = aNil
+  labeledEdits*: seq[tuple[label: int, expr: EditExpr]]
+  labeledWhens*: seq[tuple[label: int, action: Actions]]
+  `export`*: ExportSpec = ExportSpec(
+    kind: exAuto, name: "Auto-Editor Media Group", version: "11")
+  output*: string = ""
+  setAction*: seq[(Actions, PackedInt, PackedInt)]
+  setActionConcat*: bool # library-only: setAction frames run across the inputs end to end
+  adds*: seq[AddSpec]                             # `add:` overlays (see AddSpec)
+  layers*: seq[LayerSpec]                         # library-only overlays
+  transition*: PackedInt = pack(false, 0) # 0 disables; otherwise dissolve duration
+  transitionMinCut*: PackedInt = pack(true, 1000) # 1 second
+  placedTransitions*: seq[PlacedTransition] # library-only: chosen in an editor
+
+  # URL download Options
+  ytDlpLocation*: string = "yt-dlp"
+  outputFormat*: string
+  ytDlpExtras*: string
+  urlInput*: bool = false
+
+  # Timeline Options
+  resolution*: (int32, int32) = (0, 0)
+  resolutionSet*: bool = false
+  sampleRate*: cint = -1
+  frameRate*: AVRational = AVRational(num: 0, den: 0)
+  background*: Option[RGBColor] = none(RGBColor)
+  progress*: BarType = modern
+
+  # Licensing
+  licenseKey*: string # -k/--license-key; gates paid features (see license.nim)
+  flags: uint32
+
+genFlagInterface(mainArgs)
+
+var isDebug* = false
+var quiet* = false
+var noCache* = false
+let start* = epochTime()
+let noColor* = getEnv("NO_COLOR") != "" or getEnv("AV_LOG_FORCE_NOCOLOR") != ""
+
+var logHook* {.threadvar.}: LogHook
+  ## When set, warnings and notices on this thread go here instead of stderr.
+
+proc conwrite*(msg: string) {.raises: [].} =
+  if not quiet:
+    try:
+      when defined(emscripten):
+        wasmProgressWrite(("  " & msg).cstring)
+      else:
+        let columns = terminalWidth()
+        let buffer: string = " ".repeat(max(0, columns - msg.len - 3))
+        stderr.write("  " & msg & buffer & "\r")
+      stderr.flushFile()
+    except IOError:
+      discard
+
+proc debug*(msg: string) {.raises: [].} =
+  if isDebug:
+    conwrite ""
+    try:
+      if noColor:
+        stderr.writeLine(&"Debug: {msg}")
+      else:
+        stderr.styledWriteLine(fgGreen, "Debug: ", resetStyle, msg)
+    except IOError:
+      discard
+
+proc notice*(msg: string) {.raises: [].} =
+  ## A plain status line for the user, e.g. the render summary.
+  if logHook != nil:
+    logHook(msg)
+    return
+  try:
+    stderr.writeLine(msg)
+  except IOError:
+    discard
+
+proc warning*(msg: string) {.raises: [].} =
+  if logHook != nil:
+    logHook("Warning! " & msg)
+    return
+  if not quiet:
+    conwrite ""
+    try:
+      if noColor:
+        stderr.write(&"Warning! {msg}\n")
+      else:
+        stderr.styledWriteLine(fgYellow, "Warning! ", msg, resetStyle)
+    except IOError:
+      discard
+
+when defined(windows):
+  proc cExit(code: cint) {.importc: "_exit", header: "<stdlib.h>", noreturn.}
+else:
+  proc cExit(code: cint) {.importc: "_exit", header: "<unistd.h>", noreturn.}
+
+proc printError*(msg: string) {.raises: [].} =
+  conwrite ""
+  try:
+    if noColor:
+      stderr.writeLine(&"Error! {msg}")
+    else:
+      stderr.styledWriteLine(fgRed, bgBlack, "Error! ", msg, resetStyle)
+  except IOError:
+    discard
+
+proc fatal*(msg: string) {.noreturn, raises: [].} =
+  ## Print and exit immediately. For the CLI's top level and signal handlers,
+  ## where raising isn't possible or wanted.
+  printError(msg)
+  # _exit, not quit: exit() runs C++ static destructors, and ggml's Metal
+  # backend asserts in one when a failed model load left buffers behind —
+  # turning a clean error message into a crash dump.
+  try:
+    stdout.flushFile()
+    stderr.flushFile()
+  except IOError:
+    discard
+  cExit(1)
+
+proc error*(msg: string) {.noreturn, raises: [AutoEditorError].} =
+  raise newException(AutoEditorError, msg)
+
+
+type StringInterner* = Table[string, ptr string]
+
+proc intern*(interner: var StringInterner, s: string): ptr string {.raises: [].} =
+  result = interner.getOrDefault(s)
+  if result != nil:
+    return result
+
+  result = cast[ptr string](alloc0(sizeof(string)))
+  result[] = s
+  interner[s] = result
+
+proc cleanup*(interner: var StringInterner) {.raises: [].} =
+  for ptrStr in interner.values:
+    `=destroy`(ptrStr[])
+    dealloc(ptrStr)
+  interner.clear()

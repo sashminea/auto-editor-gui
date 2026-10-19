@@ -1,0 +1,126 @@
+import std/[json, sequtils]
+
+import ../[action, ffmpeg, log, timeline]
+import ../util/[color, lang]
+
+func effectGroupToJson(actions: Actions): JsonNode {.raises: [].} =
+  if actions.isCut: return %["cut"]
+  var parts: seq[string]
+  for a in actions: parts.add $a
+  return %parts
+
+func tracksToJson(tracks: seq[seq[Clip]],
+    effects: seq[Actions]): JsonNode {.raises: [].} =
+  result = newJArray()
+  for track in tracks:
+    var trackArray = newJArray()
+    for clip in track:
+      var clipObj = newJObject()
+      # A synthesized base clip (audio-only timeline that gained overlays)
+      # has no media; null keeps it importable.
+      clipObj["src"] = (if clip.src != nil: %clip.src[] else: newJNull())
+      clipObj["start"] = %clip.start
+      clipObj["dur"] = %clip.dur
+      clipObj["offset"] = %clip.offset
+      clipObj["stream"] = %clip.stream
+      let effectGroup = effects[clip.effects]
+      if not effectGroup.isEmpty:
+        clipObj["effects"] = effectGroupToJson(effectGroup)
+      trackArray.add(clipObj)
+    result.add(trackArray)
+
+func transitionsToJson(tracks: seq[seq[Transition]]): JsonNode {.raises: [].} =
+  result = newJArray()
+  for track in tracks:
+    var arr = newJArray()
+    for t in track:
+      arr.add %*{
+        "kind": "dissolve",
+        "at": t.at,
+        "dur": t.dur,
+        "alignment": (case t.alignment
+        of taStart: "start"
+        of taCenter: "center"
+        of taEnd: "end")
+      }
+    result.add arr
+
+func `%`(self: v1): JsonNode {.raises: [].} =
+  var jsonChunks = self.chunks.mapIt(%[%it[0], %it[1], %it[2]])
+  return %* {
+    "version": "1",
+    "source": self.source,
+    "timebase": $self.tb.num & "/" & $self.tb.den,
+    "chunks": jsonChunks,
+  }
+
+func `%`(self: v2): JsonNode {.raises: [].} =
+  let jsonClips = self.clips.mapIt(%[%it.start, %it.`end`, %it.`effect`])
+  let jsonEffects = self.effects.mapIt(effectGroupToJson(it))
+  return %* {
+    "version": "2",
+    "source": self.source,
+    "tb": $self.tb.num & "/" & $self.tb.den,
+    "effects": jsonEffects,
+    "clips": jsonClips,
+  }
+
+func `%`*(self: v3): JsonNode {.raises: [].} =
+  result = %* {
+    "version": "3",
+    "templateFile": (if self.templateFile != nil: self.templateFile[] else: ""),
+    "timebase": $self.tb.num & "/" & $self.tb.den,
+    "background": self.bg.toString,
+    "resolution": [self.res[0], self.res[1]],
+    "samplerate": self.sr,
+    "layout": $(self.layout),
+    "langs": self.langs,
+    "v": tracksToJson(self.v, self.effects),
+    "a": tracksToJson(self.a, self.effects),
+  }
+  if self.vt.len > 0 or self.at.len > 0:
+    result["transitions"] = %*{
+      "v": transitionsToJson(self.vt),
+      "a": transitionsToJson(self.at)
+    }
+
+proc v1Chunks*(tlV3: v3): seq[(int64, int64, float64)] =
+  ## (start, end, speed) per clip; speed 99999 marks a cut.
+  for clip2 in tlV3.clips2:
+    var speed = 1.0
+    let effectGroup = tlV3.effects[clip2.effect]
+    if effectGroup.isCut:
+      speed = 99999.0
+    else:
+      for effect in effectGroup:
+        if effect.kind == actSpeed:
+          speed *= effect.val.float64
+    result.add (clip2.start, clip2.`end`, speed)
+
+proc exportJsonTl*(tlV3: v3, `export`: ExportKind, output: string) =
+  var tlJson: JsonNode
+
+  if `export` in {exV1, exV2}:
+    # v1/v2 cannot represent transitions; they are silently dropped.
+    if not tlV3.isLinear:
+      error "No chunks available for export"
+
+    var source: string = ""
+    if tlV3.v.len > 0 and tlV3.v[0].len > 0:
+      source = tlV3.v[0][0].src[]
+    elif tlV3.a.len > 0 and tlV3.a[0].len > 0:
+      source = tlV3.a[0][0].src[]
+
+    let clips2 = tlV3.clips2
+    let tb = tlV3.tb
+    if `export` == exV2:
+      tlJson = %v2(source: source, tb: tb, clips: clips2, effects: tlV3.effects)
+    else:
+      tlJson = %v1(source: source, chunks: tlV3.v1Chunks, tb: tb)
+  else:
+    tlJson = %tlV3
+
+  if output == "-":
+    echo pretty(tlJson)
+  else:
+    writeFile(output, pretty(tlJson))

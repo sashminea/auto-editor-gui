@@ -1,63 +1,218 @@
 name: build
 on:
   release:
-    types: [created]
-  push:
-    paths-ignore:
-      - '**.md'
-      - '**.txt'
-      - '**.png'
-      - 'auto_editor/__init__.py'
-    branches:
-      - master
-  pull_request:
-    branches:
-      - master
+    types: [published]
+  workflow_dispatch:
+permissions:
+  contents: write
 jobs:
-  style:
+  fan:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-      - name: Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Lint
+        uses: actions/checkout@v7
+      - name: Make cache file
         run: |
-          pip install .
-          pip install -U ruff mypy
-          ruff format --check auto_editor
-          mypy auto_editor
+          grep 'sha256: "' ae.nimble > cache.txt
+      - name: Cache tarballs
+        id: cache-tarballs
+        uses: actions/cache@v5
+        with:
+          path: ffmpeg_sources
+          key: tarballs-${{ hashFiles('cache.txt') }}
+      - name: Homebrew
+        if: steps.cache-tarballs.outputs.cache-hit != 'true'
+        run: |
+          /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+          echo "/home/linuxbrew/.linuxbrew/bin" >> $GITHUB_PATH
+      - name: Install packages
+        if: steps.cache-tarballs.outputs.cache-hit != 'true'
+        run: brew install nim
+      - name: Download
+        if: steps.cache-tarballs.outputs.cache-hit != 'true'
+        run: nimble downloaddeps
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: deps
+          path: ffmpeg_sources/*.tar.*
+          if-no-files-found: error
+  main:
+    runs-on: ${{ matrix.os }}
+    needs: fan
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            binary_name: auto-editor-linux-x86_64
+          - os: ubuntu-24.04-arm
+            binary_name: auto-editor-linux-aarch64
+          - os: macos-15-intel
+            binary_name: auto-editor-macos-x86_64
+          - os: macos-latest
+            binary_name: auto-editor-macos-arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Get ffmpeg_sources
+        uses: actions/download-artifact@v8
+        with:
+          name: deps
+          path: ffmpeg_sources
+      - name: Install Homebrew
+        if: runner.os != 'macOS'
+        run: |
+          /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+          echo "/home/linuxbrew/.linuxbrew/bin" >> $GITHUB_PATH
+      - name: Install packages
+        run: |
+          brew update && brew install nim cmake
+      - name: Setup
+        run: |
+          if [ "${{ matrix.os }}" = "ubuntu-24.04" ]; then
+            sudo apt update
+            sudo apt-get install -y build-essential pkg-config nasm git gperf fonts-dejavu-core
+          elif [ "${{ matrix.os }}" = "ubuntu-24.04-arm" ]; then
+            sudo apt update
+            sudo apt-get install -y build-essential pkg-config git gperf fonts-dejavu-core
+          elif [ "${{ matrix.os }}" = "macos-15-intel" ]; then
+            brew install nasm
+            echo "MACOSX_DEPLOYMENT_TARGET=14.0" >> $GITHUB_ENV
+          elif [ "${{ matrix.os }}" = "macos-latest" ]; then
+            echo "MACOSX_DEPLOYMENT_TARGET=14.0" >> $GITHUB_ENV
+          fi
+      - name: GCC/Clang version
+        run: gcc --version
+      - name: Build FFmpeg
+        run: nimble makeff
+      - name: Compile
+        run: nimble make && mv auto-editor ${{ matrix.binary_name }}
+      - name: Checkout tests
+        uses: actions/checkout@v7
+        with:
+          repository: WyattBlue/auto-editor-tests
+          token: ${{ secrets.TESTS_TOKEN }}
+          path: tests
+      - name: Test
+        run: nimble test
+
+      - name: Upload to Release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.event.release.tag_name }}
+          files: ${{ matrix.binary_name }}*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  windows:
+    runs-on: ubuntu-latest
+    needs: fan
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Get ffmpeg_sources
+        uses: actions/download-artifact@v8
+        with:
+          name: deps
+          path: ffmpeg_sources
       - name: Nim
         uses: jiro4989/setup-nim-action@v2
         with:
           nim-version: "stable"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Docs
+      - name: Install llvm-mingw
         run: |
-          make -C docs compile
-          make -C docs html
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config nasm git
+          curl -L -o llvm-mingw.tar.xz https://github.com/mstorsjo/llvm-mingw/releases/download/20260616/llvm-mingw-20260616-ucrt-ubuntu-22.04-x86_64.tar.xz
+          tar xf llvm-mingw.tar.xz
+          echo "$PWD/llvm-mingw-20260616-ucrt-ubuntu-22.04-x86_64/bin" >> $GITHUB_PATH
+      - name: Build FFmpeg
+        run: nimble makeffwin
+      - name: Compile
+        run: nimble makewin && mv auto-editor.exe auto-editor-windows-x86_64.exe
+      - name: Upload to Release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.event.release.tag_name }}
+          files: auto-editor-windows-x86_64.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  main:
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-        python-version: ["3.10"]
-
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
-
+  windows-arm:
+    runs-on: ubuntu-24.04-arm
+    needs: fan
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/checkout@v7
+      - name: Get ffmpeg_sources
+        uses: actions/download-artifact@v8
         with:
-          python-version: ${{ matrix.python-version }}
-      - name: Install Auto-Editor
-        run: pip install .
-      - name: Run Debug
-        run: auto-editor --debug
-      - name: Test
-        run: auto-editor test all
+          name: deps
+          path: ffmpeg_sources
+      - name: Install Homebrew
+        run: |
+          /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+          echo "/home/linuxbrew/.linuxbrew/bin" >> $GITHUB_PATH
+      - name: Install nim
+        run: brew update && brew install nim
+      - name: Install llvm-mingw
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config git meson
+          curl -L -o llvm-mingw.tar.xz https://github.com/mstorsjo/llvm-mingw/releases/download/20260616/llvm-mingw-20260616-ucrt-ubuntu-22.04-aarch64.tar.xz
+          tar xf llvm-mingw.tar.xz
+          echo "$PWD/llvm-mingw-20260616-ucrt-ubuntu-22.04-aarch64/bin" >> $GITHUB_PATH
+      - name: Build FFmpeg
+        run: nimble makeffwinarm
+      - name: Compile
+        run: nimble makewinarm && mv auto-editor.exe auto-editor-windows-aarch64.exe
+      - name: Upload to Release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.event.release.tag_name }}
+          files: auto-editor-windows-aarch64.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  linux-armv7:
+    runs-on: ubuntu-24.04-arm
+    needs: fan
+    env:
+      DISABLE_WHISPER: "1"
+      DISABLE_HEVC: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Get ffmpeg_sources
+        uses: actions/download-artifact@v8
+        with:
+          name: deps
+          path: ffmpeg_sources
+      - name: Install Homebrew
+        run: |
+          /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+          echo "/home/linuxbrew/.linuxbrew/bin" >> $GITHUB_PATH
+      - name: Install nim
+        run: brew update && brew install nim
+      - name: Install ARMv7 cross toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config git meson gperf \
+            gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf binutils-arm-linux-gnueabihf
+      - name: Build FFmpeg
+        run: nimble makeffarmv7
+      - name: Compile
+        run: nimble makearmv7 && mv auto-editor auto-editor-linux-armv7
+      - name: Upload to Release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.event.release.tag_name }}
+          files: auto-editor-linux-armv7
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

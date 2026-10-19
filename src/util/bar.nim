@@ -1,0 +1,278 @@
+import std/[times, math, strutils, strformat, os]
+import std/[typedthreads, atomics]
+when not defined(windows):
+  import std/posix
+  var SIGWINCH {.importc, header: "<signal.h>".}: cint
+
+when defined(macosx):
+  import std/osproc
+
+import ../log
+import ./term
+
+when not defined(windows):
+  var termResized {.global.}: Atomic[bool]
+
+  proc sigwinchHandler(sig: cint) {.noconv.} =
+    termResized.store(true)
+
+proc prettyTime(myTime: float, ampm: bool): string =
+  ## Format time as a pretty string
+  let newTime = myTime.fromUnixFloat().local()
+  var hours = newTime.hour
+  let minutes = newTime.minute
+
+  if ampm:
+    if hours == 0:
+      hours = 12
+    elif hours > 12:
+      hours -= 12
+    let ampmMarker = (if newTime.hour >= 12: "PM" else: "AM")
+    result = &"{hours:02}:{minutes:02} {ampmMarker}"
+  else:
+    result = &"{hours:02}:{minutes:02}"
+
+type
+  BarConfig = object
+    icon: string
+    chars: seq[string]
+    brackets: tuple[left, right: string]
+    partWidth: int
+    machine: bool
+    hide: bool
+    ampm: bool
+
+  ThreadData = ref object
+    progress: Atomic[float]
+    total: Atomic[float]
+    shouldStop: Atomic[bool]
+    paused: Atomic[bool]   # set by end() to halt writes
+    sleeping: Atomic[bool] # set by worker to acknowledge it isn't writing
+    title: string
+    lenTitle: int
+    begin: float
+    config: ptr BarConfig  # Share constant config via pointer
+
+  ProgressHook* = proc (title: string, current, total: float) {.nimcall, gcsafe, raises: [].}
+
+  Bar* = ref object
+    config: BarConfig
+    hook: ProgressHook
+    cancel: ptr Atomic[bool]
+    title: string
+    total: float
+    lastReport: float
+    stack: seq[tuple[title: string, lenTitle: int, total: float, begin: float]]
+    progressThread: Thread[ThreadData]
+    threadData: ThreadData
+    hide: bool
+
+proc createBarString(config: BarConfig, progress: float, width: int): string =
+  let wholeWidth = int(progress * width.float)
+  let remainderWidth = (progress * width.float) mod 1.0
+  let partWidth = int(remainderWidth * config.partWidth.float)
+  let partChar = if partWidth < config.chars.len: config.chars[partWidth] else: ""
+
+  let partCharFinal = if width - wholeWidth - 1 < 0: "" else: partChar
+
+  result = config.brackets.left &
+           config.chars[^1].repeat(wholeWidth) &
+           partCharFinal &
+           config.chars[0].repeat(max(0, width - wholeWidth - 1)) &
+           config.brackets.right
+
+proc formatProgressOutput(config: BarConfig, title: string, lenTitle, columns: int,
+    progress, rate, begin, currentIndex, total: float): string =
+  if config.machine:
+    let indexClamped = min(currentIndex, total)
+    let secsTilEta = round(begin + rate - epochTime(), 2)
+    return &"{title}~{indexClamped}~{total}~{secsTilEta}"
+  else:
+    let newTime = prettyTime(begin + rate, config.ampm)
+
+    let percent = (if progress == 1.0: "100" else: $round(progress * 100, 1))
+    let pPad = " ".repeat(max(0, 4 - percent.len))
+
+    let barLen = max(1, columns - lenTitle - 35)
+    let barString = createBarString(config, progress, barLen)
+
+    return &"  {config.icon}{title} {barString} {pPad}{percent}%  ETA {newTime}    "
+
+proc progressWorker(data: ThreadData) {.thread.} =
+  ## Background thread worker that handles progress bar updates with full format
+  var lastProgress: float = -1
+  let config = data.config[] # Dereference once and cache
+  const sleepRate = 8 # ~120 FPS update rate
+  var columns = terminalWidth()
+  when defined(windows):
+    var widthCounter = 0
+    const widthRefreshRate = 63 # refresh terminal width ~twice per second (500ms / 8ms)
+
+  while not data.shouldStop.load():
+    if data.paused.load():
+      data.sleeping.store(true)
+      sleep(sleepRate)
+      continue
+
+    data.sleeping.store(false)
+
+    when not defined(windows) and not defined(emscripten):
+      if termResized.load():
+        columns = terminalWidth()
+        termResized.store(false)
+    elif defined(windows):
+      inc widthCounter
+      if widthCounter >= widthRefreshRate:
+        columns = terminalWidth()
+        widthCounter = 0
+
+    let currentProgress = data.progress.load()
+    if currentProgress == lastProgress:
+      data.sleeping.store(true)
+      sleep(sleepRate)
+      continue
+
+    let total = data.total.load()
+    let progress = if total == 0: 0.0 else: min(1.0, max(0.0, currentProgress / total))
+    let rate = if progress == 0: 0.0 else: (epochTime() - data.begin) / progress
+
+    let output = formatProgressOutput(config, data.title, data.lenTitle, columns,
+        progress, rate, data.begin, currentProgress, total)
+    when defined(emscripten):
+      wasmProgressWrite(output.cstring)
+    else:
+      stderr.write(output & "\r")
+      stderr.flushFile()
+
+    lastProgress = currentProgress
+    sleep(sleepRate)
+
+var
+  progressHook* {.threadvar.}: ProgressHook
+    ## When set, bars created on this thread report here instead of drawing.
+  cancelFlag* {.threadvar.}: ptr Atomic[bool]
+    ## When set and true, the next `tick` on this thread raises "Cancelled".
+
+proc initBar*(barType: BarType): Bar =
+  if progressHook != nil:
+    return Bar(hide: true, hook: progressHook, cancel: cancelFlag)
+
+  var icon = "⏳"
+  var chars = @[" ", "▏", "▎", "▍", "▌", "▋", "▊", "▉", "█"]
+  var brackets = (left: "|", right: "|")
+  var machine = false
+  var hide = false
+
+  case barType:
+  of BarType.classic:
+    icon = "⏳"
+    chars = @["░", "█"]
+    brackets = (left: "[", right: "]")
+  of BarType.ascii:
+    icon = "& "
+    chars = @["-", "#"]
+    brackets = (left: "[", right: "]")
+  of BarType.machine:
+    machine = true
+  of BarType.none:
+    hide = true
+  else:
+    discard # Use default modern style
+
+  let partWidth = chars.len - 1
+
+  var ampm = true
+  when defined(macosx):
+    if barType in {modern, classic, ascii}:
+      try:
+        let (dateFormat, _) = execCmdEx("defaults read com.apple.menuextra.clock Show24Hour")
+        ampm = dateFormat == "0\n"
+      except:
+        discard
+
+  let config = BarConfig(icon: icon, chars: chars, brackets: brackets,
+    machine: machine, partWidth: partWidth, ampm: ampm)
+  result = Bar(hide: hide, config: config, stack: @[], cancel: cancelFlag)
+  if not hide:
+    when not defined(windows):
+      termResized.store(false)
+      signal(SIGWINCH, sigwinchHandler)
+    result.threadData = ThreadData(config: addr result.config)
+    result.threadData.shouldStop.store(false)
+    # start() unpauses; prevents writes before the first bar.
+    result.threadData.paused.store(true)
+    createThread(result.progressThread, progressWorker, result.threadData)
+
+
+proc tick*(bar: Bar, index: float) {.raises: [AutoEditorError].} =
+  if bar.cancel != nil and bar.cancel[].load(moRelaxed):
+    error "Cancelled"
+  if bar.hook != nil:
+    # tick runs per frame/packet; a few reports a second is plenty.
+    let now = epochTime()
+    if now - bar.lastReport >= 0.05:
+      bar.lastReport = now
+      bar.hook(bar.title, index, bar.total)
+  elif not bar.hide:
+    bar.threadData.progress.store(index)
+
+func displayLen(title: string): int =
+  ## Display length of a title, excluding ANSI escape sequences.
+  var inEscape = false
+  for c in title:
+    if not inEscape:
+      if c == '\x1b': # ESC character
+        inEscape = true
+      else:
+        inc result
+    elif c == 'm':
+      inEscape = false
+
+proc start*(bar: Bar, total: float, title: string) =
+  if bar.hook != nil:
+    bar.title = title
+    bar.total = total
+    bar.lastReport = epochTime()
+    bar.hook(title, 0, total)
+  if not bar.hide:
+    when defined(windows):
+      stderr.write("\x1b[?25l") # hide cursor to prevent visible jumps while drawing
+      stderr.flushFile()
+
+    bar.threadData.title = title
+    bar.threadData.lenTitle = displayLen(title)
+    bar.threadData.total.store(total)
+    bar.threadData.progress.store(0.0)
+    bar.threadData.begin = epochTime()
+    bar.threadData.sleeping.store(false)
+    bar.threadData.paused.store(false)
+
+proc `end`*(bar: Bar) =
+  if not bar.hide:
+    bar.threadData.paused.store(true)
+    # Wait for the worker to observe the pause before clearing, so it can't
+    # re-draw the bar after we wipe the line.
+    while not bar.threadData.sleeping.load():
+      sleep(1)
+    let columns = terminalWidth()
+    stderr.write(" ".repeat(max(0, columns - 2)) & "\r")
+    when defined(windows):
+      stderr.write("\x1b[?25h") # restore cursor
+    stderr.flushFile()
+  if bar.stack.len > 0:
+    bar.stack.setLen(bar.stack.len - 1)
+
+proc destroy*(bar: Bar) =
+  ## Stop the drawing thread; it reads `bar`, so this must come before `bar`
+  ## is freed. Calling it again does nothing.
+  if bar.threadData == nil: return
+  bar.threadData.shouldStop.store(true)
+  joinThread(bar.progressThread)
+  bar.threadData = nil
+  when defined(windows):
+    if not bar.hide:
+      try:
+        stderr.write("\x1b[?25h")
+        stderr.flushFile()
+      except IOError:
+        discard
