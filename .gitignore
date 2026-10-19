@@ -22,3 +22,8 @@ dist/
 # Import/output Folder (Local imports/exports, not for version control)
 import/
 output/
+
+release/
+frontend/dist/
+
+desktop.ini

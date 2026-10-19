@@ -1,21 +1,71 @@
 {
   "name": "auto-editor-gui",
   "version": "1.0.0",
-  "description": "<p align=\"center\"><img src=\"https://auto-editor.com/img/auto-editor-banner.webp\" title=\"Auto-Editor\" width=\"700\"></p>",
+  "description": "A desktop GUI for auto-editor: cut silence and dead space from video and audio.",
+  "author": "sashminea",
+  "license": "ISC",
   "main": "dist/main.js",
-  "directories": {
-    "doc": "docs"
-  },
   "scripts": {
     "start": "node run.js",
-    "build": "tsc"
+    "build": "tsc",
+    "build:renderer": "npm --prefix frontend run build",
+    "prepare:python": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-python.ps1",
+    "pack": "node scripts/release.js pack",
+    "dist": "node scripts/release.js dist"
   },
   "keywords": [],
-  "author": "",
-  "license": "ISC",
   "devDependencies": {
     "@types/electron": "^1.6.10",
     "electron": "^33.0.1",
+    "electron-builder": "^25.1.8",
     "typescript": "^5.6.3"
+  },
+  "build": {
+    "appId": "com.sashminea.autoeditorgui",
+    "productName": "Auto-Editor GUI",
+    "directories": {
+      "output": "release",
+      "buildResources": "build-assets"
+    },
+    "files": [
+      "dist/main.js",
+      "dist/preload.js",
+      "frontend/dist/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "build/python",
+        "to": "python"
+      },
+      {
+        "from": "auto_editor",
+        "to": "auto-editor/auto_editor",
+        "filter": [
+          "**/*",
+          "!**/__pycache__/**"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build-assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Auto-Editor GUI",
+      "artifactName": "Auto-Editor-GUI-Setup-${version}.exe"
+    }
   }
 }
