@@ -9,7 +9,7 @@ Cutting silence by hand is a slow first pass on any long recording. Auto-Editor 
 
 ## Features
 
-- **Export formats.** Premiere Pro XML, Resolve FCP7 XML, Final Cut Pro XML, Shotcut MLT, or audio only.
+- **Export formats.** Premiere Pro XML, Resolve FCP7 XML, Final Cut Pro XML or Shotcut MLT.
 - **Editing controls.** Set the loudness threshold (dB) and the margin (seconds) kept around the cuts.
 - **Keyboard shortcuts:** `Ctrl/⌘+O` open a video, `Ctrl/⌘+Enter` export, `Ctrl/⌘+1…5` switch pages, `Esc` dismiss alerts.
 

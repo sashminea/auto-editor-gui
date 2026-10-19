@@ -68,7 +68,6 @@ const CardWithForm: React.FC<CardWithFormProps> = ({
               <SelectItem value="resolve-fcp7">Resolve FCP7 XML</SelectItem>
               <SelectItem value="final-cut-pro">Final Cut Pro XML</SelectItem>
               <SelectItem value="shotcut">Shotcut MLT</SelectItem>
-              <SelectItem value="audio">Audio Only</SelectItem>
             </SelectContent>
           </Select>
         </div>
