@@ -19,7 +19,7 @@ interface TitleBarProps {
 
 const helpLinks = [
   { title: "Tutorial", href: "/docs", icon: PlayIcon, hint: "Watch how the GUI works" },
-  { title: "Contribute", href: "https://github.com/sashminea/auto-editor-gui", icon: GitHubLogoIcon, hint: "Send us a pull request" },
+  { title: "Contribute", href: "https://github.com/sashminea/auto-editor-gui#read-me", icon: GitHubLogoIcon, hint: "Send us a pull request" },
   { title: "Contact us", href: "https://www.linkedin.com/in/sashminadhikari/", icon: LinkedInLogoIcon, hint: "Questions or need help?" },
 ];
 

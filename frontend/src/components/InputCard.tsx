@@ -1,20 +1,24 @@
 import React from "react";
-import { FileIcon, VideoIcon } from "@radix-ui/react-icons";
+import { FileIcon, VideoIcon, OpenInNewWindowIcon } from "@radix-ui/react-icons";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import StringInput from "./StringInput";
 import { isPlaceholder, pickVideo } from "@/lib/files";
 
 interface CardWithFormProps {
   onFileSelect: (file: { name: string; path: string }) => void;
-  onExportPathChange: (path: string) => void;
-  onExportAsChange: (exportAs: string) => void;
   selectedFile: { name: string; path: string } | null;
+  exportAs: string;
+  onExportAsChange: (exportAs: string) => void;
+  outputDir: string;
+  onChooseOutput: () => void;
+  onRevealOutput: () => void;
 }
 
-const CardWithForm: React.FC<CardWithFormProps> = ({ onFileSelect, onExportPathChange, onExportAsChange, selectedFile }) => {
+const CardWithForm: React.FC<CardWithFormProps> = ({
+  onFileSelect, selectedFile, exportAs, onExportAsChange, outputDir, onChooseOutput, onRevealOutput,
+}) => {
   const handleFileChange = async () => {
     const picked = await pickVideo();
     if (picked) onFileSelect(picked);
@@ -40,19 +44,22 @@ const CardWithForm: React.FC<CardWithFormProps> = ({ onFileSelect, onExportPathC
           )}
         </div>
 
-        {/* Export path stays non-interactive exactly as before */}
-        <div className="pointer-events-none opacity-60">
-          <StringInput
-            label="Export path"
-            id="exportPath"
-            placeholder="output/"
-            onChange={(e) => onExportPathChange(e.target.value)}
-          />
+        <div className="grid gap-1.5">
+          <Label>Output folder</Label>
+          <p className="truncate rounded-md border bg-background px-3 py-2 text-xs text-muted-foreground" title={outputDir}>
+            {outputDir || "…"}
+          </p>
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" className="flex-1" onClick={onChooseOutput}>Change…</Button>
+            <Button variant="outline" size="sm" className="flex-1" onClick={onRevealOutput} disabled={!outputDir}>
+              <OpenInNewWindowIcon /> Open
+            </Button>
+          </div>
         </div>
 
         <div className="grid gap-1.5">
           <Label htmlFor="framework">Export as</Label>
-          <Select defaultValue="premiere" onValueChange={onExportAsChange}>
+          <Select value={exportAs} onValueChange={onExportAsChange}>
             <SelectTrigger id="framework">
               <SelectValue placeholder="Premiere Pro XML" />
             </SelectTrigger>
