@@ -323,8 +323,8 @@ ipcMain.handle("run-command", async (event, args: string[]) => {
     json: ".json",
     timeline: ".timeline",
     audio: ".mp3",
-    "clip-sequence": ".clip-sequence",
-    mp4: ".mp4",
+    "clip-sequence": ".mp4",
+    default: ".mp4",
   };
   const ext = formatExtensions[exportFormat] || ".mp4";
 

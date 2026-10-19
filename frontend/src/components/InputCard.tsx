@@ -64,6 +64,8 @@ const CardWithForm: React.FC<CardWithFormProps> = ({
               <SelectValue placeholder="Premiere Pro XML" />
             </SelectTrigger>
             <SelectContent position="popper">
+              <SelectItem value="default">Default (MP4) </SelectItem>
+              <SelectItem value="clip-sequence">Clip Sequence</SelectItem>
               <SelectItem value="premiere">Premiere Pro XML</SelectItem>
               <SelectItem value="resolve-fcp7">Resolve FCP7 XML</SelectItem>
               <SelectItem value="final-cut-pro">Final Cut Pro XML</SelectItem>

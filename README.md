@@ -7,11 +7,17 @@ Cutting silence by hand is a slow first pass on any long recording. Auto-Editor 
 <!-- Update this screenshot to show the redesigned UI -->
 <img width="1488" height="960" alt="Auto-Editor GUI" src="https://github.com/user-attachments/assets/27ce8d0e-22b7-4ade-871d-fb78b6c3c874" />
 
-## Features
+## Export Methods:
 
-- **Export formats.** Premiere Pro XML, Resolve FCP7 XML, Final Cut Pro XML or Shotcut MLT.
-- **Editing controls.** Set the loudness threshold (dB) and the margin (seconds) kept around the cuts.
-- **Keyboard shortcuts:** `Ctrl/⌘+O` open a video, `Ctrl/⌘+Enter` export, `Ctrl/⌘+1…5` switch pages, `Esc` dismiss alerts.
+ - default    ; Export as a regular media file
+ - premiere   ; Export as an XML timeline file for Adobe Premiere Pro
+    - name : "Auto-Editor Media Group"
+ - resolve    ; Export as an XML timeline file for DaVinci Resolve
+    - name : "Auto-Editor Media Group"
+ - final-cut-pro  ; Export as an XML timeline file for Final Cut Pro
+    - name : "Auto-Editor Media Group"
+ - shotcut ; Export as an XML timeline file for Shotcut
+ - clip-sequence  ; Export as multiple numbered media files
 
 ## How it works
 
