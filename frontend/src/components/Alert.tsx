@@ -1,5 +1,8 @@
-import { RocketIcon, ExclamationTriangleIcon, CheckIcon, Cross1Icon } from "@radix-ui/react-icons"; // Import Cross1Icon
+import { useEffect } from "react";
+import { RocketIcon, ExclamationTriangleIcon, CheckIcon, Cross1Icon } from "@radix-ui/react-icons";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 interface AlertProps {
   type: 'normal' | 'error' | 'success';
@@ -8,36 +11,39 @@ interface AlertProps {
 }
 
 const AlertComponent: React.FC<AlertProps> = ({ type, message, onDismiss }) => {
-  let icon;
-  let alertTitle = '';
-  let alertVariant: 'default' | 'destructive' = 'default'; // Renamed to `alertVariant`
+  // Success messages clear themselves; errors and progress stay until dismissed
+  useEffect(() => {
+    if (type !== 'success') return;
+    const t = setTimeout(onDismiss, 6000);
+    return () => clearTimeout(t);
+  }, [type, message, onDismiss]);
 
-  // Determine the appropriate icon, title, and variant based on the alert type
-  if (type === 'error') {
-    icon = <ExclamationTriangleIcon className="h-4 w-4" />;
-    alertTitle = "Error!";
-    alertVariant = 'destructive'; // Set to 'destructive' for error
-  } else if (type === 'success') {
-    icon = <CheckIcon className="h-4 w-4" />;
-    alertTitle = "Success!";
-    alertVariant = 'default'; // Success also uses 'default'
-  } else {
-    icon = <RocketIcon className="h-4 w-4" />;
-    alertTitle = "Processing...";
-    alertVariant = 'default'; // Processing uses 'default'
-  }
+  const config = {
+    error: { icon: <ExclamationTriangleIcon className="h-4 w-4" />, title: "Something went wrong", variant: 'destructive' as const },
+    success: { icon: <CheckIcon className="h-4 w-4" />, title: "Done", variant: 'default' as const },
+    normal: { icon: <RocketIcon className="h-4 w-4" />, title: "Working…", variant: 'default' as const },
+  }[type];
 
   return (
-    <Alert variant={alertVariant} className="alert flex flex-row justify-between">
-      <span className="mt-1 flex flex-row gap-2">
-        {icon}
-        <AlertTitle>{alertTitle}</AlertTitle>
-      </span>
-      <AlertDescription>{message}</AlertDescription>
-      <button onClick={onDismiss} className="close-btn">
-        <Cross1Icon className="h-4 w-4" /> {/* Use Cross1Icon for close button */}
-      </button>
-    </Alert>
+    <div className="fixed bottom-4 right-4 z-50 w-[min(26rem,calc(100vw-2rem))]">
+      <Alert
+        variant={config.variant}
+        className={cn("flex items-start gap-3 bg-card shadow-lg", type === 'success' && "border-emerald-500/50")}
+      >
+        <span className={cn("mt-0.5 shrink-0", type === 'success' && "text-emerald-500", type === 'normal' && "text-primary")}>
+          {config.icon}
+        </span>
+        <div className="min-w-0 flex-1">
+          <AlertTitle>{config.title}</AlertTitle>
+          <AlertDescription className={cn("max-h-40 overflow-auto whitespace-pre-wrap break-words", type !== 'error' && "text-muted-foreground")}>
+            {message}
+          </AlertDescription>
+        </div>
+        <Button variant="ghost" size="icon" className="-mr-2 -mt-1.5 h-7 w-7 shrink-0" onClick={onDismiss} aria-label="Dismiss">
+          <Cross1Icon className="h-3.5 w-3.5" />
+        </Button>
+      </Alert>
+    </div>
   );
 };
 

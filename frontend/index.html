@@ -1,13 +1,14 @@
 <!DOCTYPE html>
-<html  lang="en">
+<html  lang="en" class="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Auto-Editor</title>
     <link href="/src/index.css" rel="stylesheet">
+    <script>try{if(localStorage.getItem('theme')==='light')document.documentElement.classList.remove('dark')}catch(e){}</script>
 </head>
 <body>
-    <div id="root" class="px-8 py-2"></div>
+    <div id="root"></div>
     <script type="module" src="/src/index.tsx"></script>
 </body>
 </html>

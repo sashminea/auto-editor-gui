@@ -1,17 +1,26 @@
-import { app, BrowserWindow, ipcMain, dialog } from 'electron';
-import path from 'path';
-import { spawn } from 'child_process';
-import fs from 'fs';
-import os from 'os';
+import { app, BrowserWindow, ipcMain, dialog, protocol, net } from "electron"; // NEW: protocol, net
+import path from "path";
+import { spawn } from "child_process";
+import fs from "fs";
+import os from "os";
+import { pathToFileURL } from "url"; // NEW
+
+// NEW: must run before app is ready. Lets the <video> preview read local files.
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: "local-media",
+    privileges: { secure: true, supportFetchAPI: true, stream: true },
+  },
+]);
 
 const createAutoEditorFolder = () => {
-  const folderPath = path.join(process.env.APPDATA || '', 'Auto Editor Output');
+  const folderPath = path.join(process.env.APPDATA || "", "Auto Editor Output");
   if (!fs.existsSync(folderPath)) {
     try {
       fs.mkdirSync(folderPath, { recursive: true });
       console.log(`Directory created at: ${folderPath}`);
     } catch (error) {
-      console.error('Error creating directory:', error);
+      console.error("Error creating directory:", error);
     }
   } else {
     console.log(`Directory already exists at: ${folderPath}`);
@@ -35,10 +44,17 @@ ipcMain.handle("open-folder-dialog", async () => {
   return result.filePaths[0];
 });
 
-
 // Helper function to get the correct Python interpreter
 const getPythonPath = () => {
-  const pythonPath = path.join(os.homedir(), 'AppData', 'Local', 'Programs', 'Python', 'Python311', 'python.exe');
+  const pythonPath = path.join(
+    os.homedir(),
+    "AppData",
+    "Local",
+    "Programs",
+    "Python",
+    "Python311",
+    "python.exe",
+  );
   // Check if Python exists at the specified path
   if (!fs.existsSync(pythonPath)) {
     throw new Error(`Python not found at: ${pythonPath}`);
@@ -48,26 +64,43 @@ const getPythonPath = () => {
 
 // Helper function to find the local Auto-Editor __main__.py script
 const getAutoEditorScriptPath = () => {
-  return path.join(__dirname, 'auto_editor'); // Folder containing __main__.py
+  return path.join(__dirname, "auto_editor"); // Folder containing __main__.py
 };
 
 // Helper function to find Python and Auto-Editor paths
 const getPythonAndEditorPaths = () => {
   const userHomeDir = os.homedir();
-  const pythonPath = path.join(userHomeDir, 'AppData', 'Local', 'Programs', 'Python', 'Python311', 'python.exe');
-  const autoEditorScript = path.join(userHomeDir, 'AppData', 'Local', 'Programs', 'Python', 'Python311', 'Scripts', 'auto-editor');
+  const pythonPath = path.join(
+    userHomeDir,
+    "AppData",
+    "Local",
+    "Programs",
+    "Python",
+    "Python311",
+    "python.exe",
+  );
+  const autoEditorScript = path.join(
+    userHomeDir,
+    "AppData",
+    "Local",
+    "Programs",
+    "Python",
+    "Python311",
+    "Scripts",
+    "auto-editor",
+  );
   return { pythonPath, autoEditorScript };
 };
 
-const appDataPath = app.getPath('appData');  // Automatically gets the AppData path
+const appDataPath = app.getPath("appData"); // Automatically gets the AppData path
 
 // Define the path for the AutoEditorOutput folder
-const autoEditorOutputPath = path.join(appDataPath, 'AutoEditorOutput');
+const autoEditorOutputPath = path.join(appDataPath, "AutoEditorOutput");
 
 // Ensure the Auto-Editor Output directory exists
 const ensureAutoEditorOutputDirectory = () => {
-  const appDataPath = app.getPath('appData');
-  const autoEditorOutputPath = path.join(appDataPath, 'AutoEditorOutput');
+  const appDataPath = app.getPath("appData");
+  const autoEditorOutputPath = path.join(appDataPath, "AutoEditorOutput");
   if (!fs.existsSync(autoEditorOutputPath)) {
     try {
       fs.mkdirSync(autoEditorOutputPath, { recursive: true });
@@ -80,33 +113,45 @@ const ensureAutoEditorOutputDirectory = () => {
   return autoEditorOutputPath;
 };
 
-console.log("AppData Path:", appDataPath);  // Outputs something like "C:\\Users\\<UserName>\\AppData\\Roaming"
+console.log("AppData Path:", appDataPath); // Outputs something like "C:\\Users\\<UserName>\\AppData\\Roaming"
 
 // Create the Electron window
 function createWindow() {
   const mainWindow = new BrowserWindow({
-    width: 800,
-    height: 600,
+    // NEW: size, minimum size and native-looking custom title bar
+    width: 1180,
+    height: 760,
+    minWidth: 760,
+    minHeight: 600,
+    backgroundColor: "#151515",
+    autoHideMenuBar: true,
+    titleBarStyle: "hidden",
+    titleBarOverlay: { color: "#212121", symbolColor: "#e6e6e6", height: 40 },
     webPreferences: {
-      preload: path.join(__dirname, '..', 'dist/preload.js'),
+      preload: path.join(__dirname, "..", "dist/preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
       devTools: true,
       disableDialogs: true,
       spellcheck: false,
       webviewTag: false,
-      autoplayPolicy: 'no-user-gesture-required',
+      autoplayPolicy: "no-user-gesture-required",
       experimentalFeatures: false,
       safeDialogs: true,
     },
   });
 
-  mainWindow.loadURL('http://localhost:5173'); // Adjust based on your server URL
+  mainWindow.loadURL("http://localhost:5173"); // Adjust based on your server URL
 }
 
 // Define the AppData output directory
 const getAppDataOutputDirectory = () => {
-  const appDataPath = path.join(os.homedir(), 'AppData', 'Roaming', 'AutoEditorOutput');
+  const appDataPath = path.join(
+    os.homedir(),
+    "AppData",
+    "Roaming",
+    "AutoEditorOutput",
+  );
   if (!fs.existsSync(appDataPath)) {
     try {
       fs.mkdirSync(appDataPath, { recursive: true });
@@ -120,24 +165,50 @@ const getAppDataOutputDirectory = () => {
 };
 
 // Handle the request for AppData path
-ipcMain.handle('get-appdata-path', () => {
-  ensureAutoEditorOutputDirectory(); 
-  return app.getPath('appData'); // Returns the AppData path for the user
+ipcMain.handle("get-appdata-path", () => {
+  ensureAutoEditorOutputDirectory();
+  return app.getPath("appData"); // Returns the AppData path for the user
 });
 
+// NEW: recolour the native window buttons when the theme toggles
+ipcMain.on("set-title-bar-theme", (e, theme: string) => {
+  if (process.platform === "darwin") return;
+  BrowserWindow.fromWebContents(e.sender)?.setTitleBarOverlay(
+    theme === "dark"
+      ? { color: "#212121", symbolColor: "#e6e6e6" }
+      : { color: "#fcfcfc", symbolColor: "#1f1f1f" },
+  );
+});
 
+ipcMain.handle("run-command", async (event, args) => {
+  // NEW: _event -> event
+  const autoEditorFolder = path.join(__dirname, "dist/auto_editor"); // Path to your local auto_editor module
+  // FIX: the renderer splits the command on spaces, so a path with spaces arrives in pieces
+  // and args[0] is the module name ("auto_editor"), not the video. Re-join and re-tokenise,
+  // keeping quoted sections together.
+  const tokens: string[] = (args.join(" ").match(/"[^"]*"|\S+/g) ?? []).map(
+    (t: string) => t.replace(/^"|"$/g, ""),
+  );
+  const moduleName = tokens[0] || "auto_editor"; // "auto_editor"
+  const inputFile = tokens[1]; // the selected video
+  const restArgs = tokens.slice(2); // --export, --edit, --margin, ...
+  if (!inputFile) throw new Error("No input file given");
 
-ipcMain.handle('run-command', async (_event, args) => {
-  const autoEditorFolder = path.join(__dirname, 'dist/auto_editor');  // Path to your local auto_editor module
-  const inputFile = args[0];  // File path as input
-  
   // Extract the selected export format from the args (assuming it's passed as the 2nd argument)
-    const exportFormat = args.find((arg: string) => arg.startsWith('--export'))?.split('=')[1] || 'mp4'; // Default to 'mp4'
+  // FIX: supports both "--export premiere" (what the UI sends) and "--export=premiere"
+  const exportIdx = restArgs.findIndex(
+    (a: string) => a === "--export" || a.startsWith("--export="),
+  );
+  const exportFormat =
+    exportIdx === -1
+      ? "mp4" // Default to 'mp4'
+      : restArgs[exportIdx].includes("=")
+        ? restArgs[exportIdx].split("=")[1]
+        : restArgs[exportIdx + 1] || "mp4";
 
-  
   // Define the output folder path in the root directory
-  const outputFolderPath = path.join(__dirname, '..', 'output');
-  
+  const outputFolderPath = path.join(__dirname, "..", "output");
+
   // Ensure the 'output' folder exists, create it if necessary
   if (!fs.existsSync(outputFolderPath)) {
     fs.mkdirSync(outputFolderPath);
@@ -146,50 +217,57 @@ ipcMain.handle('run-command', async (_event, args) => {
 
   // Get the file name without the extension
   const inputFileName = path.basename(inputFile, path.extname(inputFile));
-  
+
   // Define a mapping between export formats and extensions
   const formatExtensions: { [key: string]: string } = {
-    premiere: '.xml',
-    'resolve-fcp7': '.xml',
-    'final-cut-pro': '.xml',
-    resolve: '.xml',
-    shotcut: '.mlt',
-    json: '.json',
-    timeline: '.timeline',
-    audio: '.mp3', // or .wav depending on your audio export settings
-    'clip-sequence': '.clip-sequence',
-    mp4: '.mp4',  // Default to mp4
+    premiere: ".xml",
+    "resolve-fcp7": ".xml",
+    "final-cut-pro": ".xml",
+    resolve: ".xml",
+    shotcut: ".mlt",
+    json: ".json",
+    timeline: ".timeline",
+    audio: ".mp3", // or .wav depending on your audio export settings
+    "clip-sequence": ".clip-sequence",
+    mp4: ".mp4", // Default to mp4
   };
 
   // Get the correct file extension for the selected format
-  const fileExtension = formatExtensions[exportFormat] || '.mp4'; // Default to mp4 if not found
+  const fileExtension = formatExtensions[exportFormat] || ".mp4"; // Default to mp4 if not found
 
   // Create the output file path with the new extension
-  const outputFilePath = path.join(outputFolderPath, `${inputFileName}${fileExtension}`);
+  const outputFilePath = path.join(
+    outputFolderPath,
+    `${inputFileName}${fileExtension}`,
+  );
 
   // Add --output argument pointing to the full output file path
   const command = [
-    getPythonPath(),  // This gets the path to the Python executable
-    '-m',  // Running the auto_editor module
-    inputFile,  // File to process
-    ...args.slice(1),  // Additional arguments for the Auto-Editor
-    '--output', `"${outputFilePath}"`  // Specify the output file path
+    getPythonPath(), // This gets the path to the Python executable
+    "-m", // Running the auto_editor module
+    moduleName, // auto_editor
+    `"${inputFile}"`, // File to process (re-quoted so paths with spaces survive the shell)
+    ...restArgs, // Additional arguments for the Auto-Editor
+    "--output",
+    `"${outputFilePath}"`, // Specify the output file path
   ];
 
-  console.log("Executing command:", command.join(' '));
+  console.log("Executing command:", command.join(" "));
 
   return new Promise((resolve, reject) => {
     const process = spawn(command[0], command.slice(1), { shell: true });
 
-    process.stdout.on('data', (data) => {
+    process.stdout.on("data", (data) => {
       console.log(`stdout: ${data}`);
+      event.sender.send("commandOutput", data.toString()); // NEW: forward to the UI
     });
 
-    process.stderr.on('data', (data) => {
+    process.stderr.on("data", (data) => {
       console.error(`stderr: ${data}`);
+      event.sender.send("commandOutput", data.toString()); // NEW: forward to the UI
     });
 
-    process.on('close', (code) => {
+    process.on("close", (code) => {
       console.log(`Process exited with code ${code}`);
       if (code === 0) {
         resolve(`Process completed successfully with code ${code}`);
@@ -198,26 +276,23 @@ ipcMain.handle('run-command', async (_event, args) => {
       }
     });
 
-    process.on('error', (error) => {
+    process.on("error", (error) => {
       console.error(`Process error: ${error.message}`);
       reject(error);
     });
   });
 });
 
-
-
-
-ipcMain.handle('open-file-dialog', async () => {
+ipcMain.handle("open-file-dialog", async () => {
   const result = await dialog.showOpenDialog({
-    properties: ['openFile'],
-    filters: [{ name: 'Videos', extensions: ['mp4', 'avi', 'mov', 'mkv'] }],
+    properties: ["openFile"],
+    filters: [{ name: "Videos", extensions: ["mp4", "avi", "mov", "mkv"] }],
   });
 
   if (result.filePaths && result.filePaths.length > 0) {
     const selectedFilePath = result.filePaths[0];
 
-    const importFolderPath = path.join(__dirname, '..', 'import');  // Root-level 'import' folder
+    const importFolderPath = path.join(__dirname, "..", "import"); // Root-level 'import' folder
     if (!fs.existsSync(importFolderPath)) {
       fs.mkdirSync(importFolderPath, { recursive: true });
       console.log(`Import folder created at: ${importFolderPath}`);
@@ -226,22 +301,29 @@ ipcMain.handle('open-file-dialog', async () => {
     const fileName = path.basename(selectedFilePath);
     const newFilePath = path.join(importFolderPath, fileName);
 
-    fs.copyFileSync(selectedFilePath, newFilePath);  // This moves the file
+    fs.copyFileSync(selectedFilePath, newFilePath); // This moves the file
     console.log(`File moved to: ${newFilePath}`);
-    
-    return newFilePath;  // Return the new file path in the import folder
+
+    return newFilePath; // Return the new file path in the import folder
   } else {
-    throw new Error('No file selected');
+    throw new Error("No file selected");
   }
 });
 
 app.whenReady().then(() => {
+  // NEW: serve local files to the <video> preview
+  protocol.handle("local-media", (req) => {
+    let p = decodeURIComponent(new URL(req.url).pathname);
+    if (/^\/[A-Za-z]:/.test(p)) p = p.slice(1); // Windows drive letter
+    return net.fetch(pathToFileURL(p).toString(), { headers: req.headers });
+  });
+
   createAutoEditorFolder();
   createWindow();
 });
 
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
+app.on("window-all-closed", () => {
+  if (process.platform !== "darwin") {
     app.quit();
   }
 });

@@ -10,7 +10,7 @@ interface StringInputProps {
 
 const StringInput: React.FC<StringInputProps> = ({ label, id, placeholder, onChange }) => {
   return (
-    <div className="grid w-full max-w-sm items-center gap-1.5">
+    <div className="grid w-full items-center gap-1.5">
       <Label htmlFor={id}>{label}</Label>
       <Input type="text" id={id} placeholder={placeholder} onChange={onChange} />
     </div>

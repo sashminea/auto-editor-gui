@@ -6,9 +6,11 @@ import ArgumentInput from "./InputLoudness";
 interface CardWithArgumentsProps {
   onExport: (loudness: number, margin: number) => void;
   onApply: (loudness: number, margin: number) => void;
+  applied?: { loudness: number; margin: number }; // values currently reflected in the command
+  busy?: boolean; // an export is running
 }
 
-const CardWithArguments: React.FC<CardWithArgumentsProps> = ({ onExport, onApply }) => {
+const CardWithArguments: React.FC<CardWithArgumentsProps> = ({ onExport, onApply, applied, busy }) => {
   const [loudness, setLoudness] = React.useState<number>(-19);
   const [margin, setMargin] = React.useState<number>(0);
 
@@ -20,33 +22,32 @@ const CardWithArguments: React.FC<CardWithArgumentsProps> = ({ onExport, onApply
     setMargin(Number(event.target.value));
   };
 
-  const handleExport = () => {
-    onExport(loudness, margin);
-  };
-
-  const handleApply = () => {
-    onApply(loudness, margin);
-  };
+  const dirty = !!applied && (applied.loudness !== loudness || applied.margin !== margin);
 
   return (
-    <Card className="w-[350px]">
-      <CardHeader>
-        <CardTitle>Adjust arguments</CardTitle>
+    <Card className="w-full rounded-md shadow-none">
+      <CardHeader className="border-b px-4 py-3">
+        <CardTitle className="text-sm">Adjust arguments</CardTitle>
       </CardHeader>
-      <CardContent>
-        <div className="grid w-full items-center gap-4">
-          <div className="flex flex-col space-y-1.5">
-            <ArgumentInput label="Loudness" id="loudness" placeholder="-19dB" value={loudness} onChange={handleLoudnessChange} />
-          </div>
-
-          <div className="flex flex-col space-y-1.5">
-            <ArgumentInput label="Margin" id="margin" placeholder="None" value={margin} onChange={handleMarginChange} />
-          </div>
-        </div>
+      <CardContent className="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2 lg:grid-cols-1">
+        <ArgumentInput label="Loudness" id="loudness" placeholder="-19" suffix="dB" value={loudness} onChange={handleLoudnessChange} />
+        <ArgumentInput label="Margin" id="margin" placeholder="0" suffix="s" value={margin} onChange={handleMarginChange} />
       </CardContent>
-      <CardFooter className="flex justify-between">
-        <Button onClick={handleApply}>Apply</Button>
-        <Button onClick={handleExport}>Export</Button>
+      <CardFooter className="flex-col items-stretch gap-3 p-4 pt-0">
+        <p className="flex h-4 items-center gap-2 text-xs text-muted-foreground" aria-live="polite">
+          {dirty && (
+            <>
+              <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+              Not applied yet. Press Apply to update the command.
+            </>
+          )}
+        </p>
+        <div className="flex gap-2">
+          <Button variant="outline" className="flex-1" onClick={() => onApply(loudness, margin)}>Apply</Button>
+          <Button className="flex-1" disabled={busy} onClick={() => onExport(loudness, margin)}>
+            {busy ? "Exporting…" : "Export"}
+          </Button>
+        </div>
       </CardFooter>
     </Card>
   );
