@@ -126,6 +126,8 @@ For finer control, open the other pages from the sidebar. Their options are adde
 
 ## Credits and license
 
-Auto-Editor is created by [Wyatt Blue](https://github.com/WyattBlue/auto-editor), and this project builds a GUI around it. See the repository's `LICENSE` file for terms.
+- **Auto-Editor** is created by [Wyatt Blue](https://github.com/WyattBlue/auto-editor), and this project builds a GUI around it. 
+- **Release Logo:** The application logo is a modified derivative of the official Paint.NET logo (swapping the paintbrush for editing scissors), originally created by [Rick Brewster / Paint.NET](https://www.getpaint.net/). Used respectfully for branding/thematic identity in this open-source GUI wrapper.
+- See the repository's `LICENSE` file for full software license terms.
 
 Questions or feedback? Reach out on [LinkedIn](https://www.linkedin.com/in/sashminadhikari/).
