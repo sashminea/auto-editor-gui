@@ -658,20 +658,16 @@ proc x265Build(buildPath: string, kind: CrossKind) =
   let dir10bit = pkgDir / "x265_10bit"
   let dir8bit = pkgDir / "x265_8bit"
 
-  # For 10bit version, only x86_64 has assembly instructions available
   var highBitDepthArgs: seq[string] = @[
     "-DHIGH_BIT_DEPTH=1",
     "-DEXPORT_C_API=0",
     "-DENABLE_SHARED=0",
     "-DENABLE_CLI=0"
   ]
-  let isLinuxAarch64 = hostOS == "linux" and hostCPU == "arm64"
 
-  if hostCPU != "amd64" or kind == winArm or isWasm:
+  # 32-bit ARM has no 10-bit assembly, wasm has none at all
+  if kind == armv7 or isWasm:
     highBitDepthArgs.add("-DENABLE_ASSEMBLY=0")
-
-  if isLinuxAarch64:
-    highBitDepthArgs.add("-DENABLE_SVE2=0")
 
   var commonArgs = @[
     &"-DCMAKE_INSTALL_PREFIX={buildPath}",
@@ -688,7 +684,6 @@ proc x265Build(buildPath: string, kind: CrossKind) =
   if kind == winArm:
     let toolchainFile = buildPath.parentDir / "scripts" / "aarch64-w64-mingw32.cmake"
     commonArgs.add(&"-DCMAKE_TOOLCHAIN_FILE={toolchainFile}")
-    highBitDepthArgs.add("-DENABLE_ASSEMBLY=0")  # No x86 assembly for ARM64
   elif kind == winX64:
     let toolchainFile = buildPath.parentDir / "scripts" / "x86_64-w64-mingw32.cmake"
     commonArgs.add(&"-DCMAKE_TOOLCHAIN_FILE={toolchainFile}")
@@ -719,9 +714,6 @@ proc x265Build(buildPath: string, kind: CrossKind) =
     cmake8Cmd &= " -DENABLE_ASSEMBLY=0"
   for arg in commonArgs:
     cmake8Cmd &= " " & arg
-
-  if isLinuxAarch64:
-    cmake8Cmd &= " -DENABLE_SVE2=0"
 
   echo "RUN: ", cmake8Cmd
   exec cmake8Cmd
@@ -1008,7 +1000,7 @@ func basicPcms(): seq[string] =
 proc setupCommonFlags(packages: seq[Package], kind: CrossKind = native): string =
   let enableParsers = "aac,aac_latm,ac3,amr,av1,dca,dnxhd,dvbsub,dvdsub,ffv1,flac,gif,h263,h264,hdr,hevc,mjpeg,mlp,mpeg4video,mpegaudio,mpegvideo,opus,png,pnm,prores,prores_raw,vorbis,vp3,vp8,vp9,webp".split(",")
 
-  var enableEncoders = "aac,aac_fixed,ac3,ac3_fixed,alac,ass,cfhd,dvbsub,dvdsub,dvvideo,ffv1,flac,gif,h263,h263p,hdr,libmp3lame,libopus,libx264,libx264rgb,movtext,mp2,mp2fixed,mpeg1video,mpeg2video,mpeg4,png,prores,prores_aw,prores_ks,srt,ssa,text,vorbis,webvtt".split(",")
+  var enableEncoders = "aac,aac_fixed,ac3,ac3_fixed,alac,ass,cfhd,dvbsub,dvdsub,dvvideo,ffv1,flac,gif,h263,h263p,hdr,libmp3lame,libopus,libx264,libx264rgb,mjpeg,movtext,mp2,mp2fixed,mpeg1video,mpeg2video,mpeg4,png,prores,prores_aw,prores_ks,srt,ssa,text,vorbis,webvtt".split(",")
   enableEncoders &= basicPcms()
   enableEncoders &= "pcm_bluray,pcm_s32le_planar,pcm_s24le_planar,pcm_s16be_planar,pcm_s16le_planar,pcm_s8_planar".split(",")
 
