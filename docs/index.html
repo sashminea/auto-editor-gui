@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Auto-Editor GUI — Cut the silence. Keep the story.</title>
+<meta name="description" content="A desktop app for auto-editor that cuts silence and dead space from video and audio, then exports a clean file or a timeline for Premiere Pro, DaVinci Resolve, Final Cut Pro and Shotcut.">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@300..700&family=Geist+Mono:wght@500&display=swap">
+<style>
+:root{
+  --bg:#FBFAF6;--ink:#272038;--ink72:#272038b8;--ink48:#2720387a;--ink10:#2720381a;--ink06:#2720380f;
+  --line:#ebebec;--acc:#bd9fff;--acc2:#7547ff;--dark:#15101f;--peach:#ffd7c2;--sun:#ffe9a0;
+  --serif:"Geist",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;--sans:"Geist",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;--mono:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  --ease:cubic-bezier(.22,1,.36,1);--col:min(1280px,100% - 160px);
+}
+*{box-sizing:border-box;margin:0}
+html{scroll-behavior:smooth;-webkit-text-size-adjust:100%}
+body{background:var(--bg);color:var(--ink);font:400 18px/1.5 var(--sans);-webkit-font-smoothing:antialiased;overflow-x:clip}
+::selection{background:#c8bdf5}
+a{color:inherit}
+img,svg{display:block;max-width:100%}
+.wrap{width:var(--col);margin-inline:auto}
+.mono{font-family:var(--mono);font-size:11px;line-height:13px;letter-spacing:.1em;text-transform:uppercase;font-weight:500}
+h1,h2,h3{font-weight:500;font-family:var(--serif)}
+h1{font-size:clamp(40px,8.2vw,112px);line-height:1.02;letter-spacing:-.045em}
+h2{font-size:clamp(34px,4.6vw,60px);line-height:1.06;letter-spacing:-.04em;text-wrap:balance}
+h3{font-size:24px;line-height:1.15;letter-spacing:-.03em}
+p{text-wrap:pretty}
+.lead{color:var(--ink72);max-width:560px;font-size:18px;letter-spacing:-.01em}
+.sec{padding:96px 0}
+.head{display:grid;gap:16px;justify-items:center;text-align:center;margin-bottom:56px}
+.head h2{max-width:17ch}
+
+/* dual-label pill */
+.btn{--bgc:var(--ink);--fg:#fff;--bd:transparent;display:inline-flex;align-items:center;height:44px;padding:0 20px;border-radius:999px;border:1px solid var(--bd);background:var(--bgc);color:var(--fg);font:500 13px/1 var(--sans);text-decoration:none;cursor:pointer;white-space:nowrap;position:relative;-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px)}
+.btn .vp{display:inline-grid;overflow:hidden;position:relative}
+.btn .vp>span{grid-area:1/1;transition:transform .32s var(--ease),opacity .24s ease}
+.label--primary{transform:translateY(0);opacity:1}
+.label--duplicate{transform:translateY(100%);opacity:0}
+.btn.sm{height:34px;padding:0 14px}
+.btn.acc{--bgc:var(--acc);--fg:var(--ink)}
+.btn.ghost{--bgc:#ffffff66;--fg:var(--ink);--bd:var(--ink10)}
+.btn.white{--bgc:#fff;--fg:var(--ink)}
+.btn.ghostd{--bgc:transparent;--fg:var(--ink);--bd:var(--ink10)}
+.btn:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
+@media(hover:hover){.btn:hover .label--primary,.btn:focus-visible .label--primary{transform:translateY(-100%);opacity:0}.btn:hover .label--duplicate,.btn:focus-visible .label--duplicate{transform:translateY(0);opacity:1}}
+.row{display:flex;gap:8px;flex-wrap:wrap}
+
+/* header */
+header{position:fixed;z-index:50;top:calc(14px + env(safe-area-inset-top,0px));left:0;right:0;display:flex;justify-content:center;padding:0 16px;pointer-events:none}
+.pill{pointer-events:auto;display:flex;align-items:center;gap:28px;height:56px;padding:0 10px 0 18px;border-radius:999px;border:1px solid var(--ink06);background:#fbfaf6a6;-webkit-backdrop-filter:blur(18px);backdrop-filter:blur(18px);transition:background .18s ease,border-color .18s ease}
+header.on .pill{background:#fbfaf6ee;border-color:var(--line)}
+.logo{display:flex;align-items:center;gap:10px;font:500 16px/1 var(--sans);letter-spacing:-.02em;text-decoration:none}
+.logo i{width:26px;height:26px;border-radius:8px;background:var(--ink);display:grid;place-items:center}
+header{transition:transform .46s var(--ease)}header.hide{transform:translateY(-90px)}
+.pill{position:relative;background:#ffffffb8;border-color:#ffffffd9;-webkit-backdrop-filter:blur(20px) saturate(1.7);backdrop-filter:blur(20px) saturate(1.7)}
+header.on .pill{background:#ffffffe6}
+.pill nav{position:relative;display:flex;gap:2px}
+.pill nav a{position:relative;z-index:1;font:500 14px/18px var(--sans);padding:9px 14px;border-radius:999px;text-decoration:none;color:var(--ink72);transition:color .2s}
+.pill nav a:hover,.pill nav a.cur{color:var(--ink)}
+.ind{position:absolute;z-index:0;top:0;left:0;height:100%;width:0;border-radius:999px;background:linear-gradient(135deg,#efe9ff,#ffe9df);opacity:0;transition:transform .45s var(--ease),width .45s var(--ease),opacity .25s}
+.pbar{position:absolute;left:24px;right:24px;bottom:0;height:2px;border-radius:2px;overflow:hidden;pointer-events:none}
+.pbar i{display:block;height:100%;transform-origin:0 50%;transform:scaleX(var(--p,0));background:linear-gradient(90deg,#7c5cff,#ff6a8a,#ffb02e)}
+.btn.hot{--fg:#fff;background:linear-gradient(120deg,#6d4dff,#c04dff,#ff6a8a,#6d4dff);background-size:300% 100%;animation:hue 6s linear infinite}
+@keyframes hue{to{background-position:300% 0}}
+
+/* hero */
+.hero{padding:8px 8px 0}
+.frame{position:relative;border-radius:28px;overflow:hidden;isolation:isolate;border:1px solid var(--ink06);background:#fbf6ee}
+.fx{position:absolute;inset:0;z-index:-1;overflow:hidden;pointer-events:none}
+.fx .b{position:absolute;border-radius:50%;filter:blur(70px);opacity:.5;will-change:transform;translate:calc(var(--px,0)*var(--k,30px)) calc(var(--py,0)*var(--k,30px))}
+.b1{width:50vw;height:50vw;left:-12vw;top:-12vw;background:#7c5cff;--k:50px;animation:d1 19s ease-in-out infinite alternate}
+.b2{width:44vw;height:44vw;right:-12vw;top:-6vw;background:#ff6a4d;--k:-44px;animation:d2 23s ease-in-out infinite alternate}
+.b3{width:40vw;height:40vw;left:30vw;bottom:-20vw;background:#ffc23d;--k:30px;animation:d3 21s ease-in-out infinite alternate}
+.b4{width:30vw;height:30vw;right:12vw;bottom:-8vw;background:#2fd6c6;--k:-64px;animation:d4 17s ease-in-out infinite alternate}
+.b5{width:32vw;height:32vw;left:-6vw;bottom:-8vw;background:#ff5fb0;--k:40px;animation:d2 25s ease-in-out infinite alternate-reverse}
+@keyframes d1{to{transform:translate(16vw,10vw) scale(1.18)}}@keyframes d2{to{transform:translate(-14vw,8vw) scale(1.12)}}@keyframes d3{to{transform:translate(-12vw,-8vw) scale(1.2)}}@keyframes d4{to{transform:translate(-10vw,-6vw) scale(.85)}}
+.fx .dots{position:absolute;inset:0;background-image:radial-gradient(#27203880 1px,transparent 1.4px);background-size:24px 24px;-webkit-mask-image:radial-gradient(260px circle at var(--mx,50%) var(--my,30%),#000,transparent);mask-image:radial-gradient(260px circle at var(--mx,50%) var(--my,30%),#000,transparent)}
+.fx .spot{position:absolute;inset:0;background:radial-gradient(380px circle at var(--mx,50%) var(--my,30%),#ffffffb8,transparent 70%)}
+.rip{position:absolute;width:20px;height:20px;margin:-10px;border:1.5px solid var(--ink);border-radius:50%;opacity:.5;animation:rip 1s var(--ease) forwards}
+@keyframes rip{to{transform:scale(16);opacity:0}}
+.b4,.b5,.fx .dots,.rip{display:none}
+.dsec{position:relative;z-index:2;margin-top:-140px;padding-bottom:24px}
+.hero-in{padding:clamp(150px,22vh,220px) 0 clamp(190px,26vh,260px);display:grid;justify-items:center;text-align:center;gap:24px}
+.hero h1{max-width:12ch}
+.hero .lead{font-size:20px}
+.note{color:var(--ink48)}
+.demo{width:min(980px,100%);margin:0 auto;text-align:left;border-radius:20px;border:1px solid var(--ink10);background:#fffffff2;-webkit-backdrop-filter:blur(20px);backdrop-filter:blur(20px);overflow:hidden}
+.bar{display:flex;align-items:center;gap:8px;padding:12px 16px;border-bottom:1px solid var(--line);background:#f7f5f1}
+.bar b{width:12px;height:12px;border-radius:50%;background:#ff5f57}.bar b:nth-child(2){background:#febc2e}.bar b:nth-child(3){background:#28c840}
+.bar .mono{margin-left:10px;color:var(--ink48)}
+.demo-body{padding:24px;display:grid;gap:20px}
+.wave{height:120px;display:flex;align-items:center;gap:3px;border-radius:12px;background:#f7f5f1;padding:0 12px;border:1px solid var(--line)}
+.wave i{flex:1;min-width:2px;border-radius:2px;background:var(--acc2);height:var(--h);transition:height .5s var(--ease),opacity .3s,background .3s;opacity:1}
+.wave i.cut{height:4px;background:var(--ink);opacity:.2}
+.ctrl{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+.ctrl label{display:grid;gap:8px}
+.ctrl label span{display:flex;justify-content:space-between;color:var(--ink72)}
+input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:4px;border-radius:4px;background:var(--ink10);outline:none}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:18px;height:18px;border-radius:50%;background:var(--bg);border:2px solid var(--ink);cursor:grab}
+input[type=range]::-moz-range-thumb{width:14px;height:14px;border-radius:50%;background:var(--bg);border:2px solid var(--ink);cursor:grab}
+.chips{display:flex;gap:6px;flex-wrap:wrap}
+.chip{font:500 12px/1 var(--sans);padding:9px 12px;border-radius:999px;border:1px solid var(--ink10);background:transparent;color:var(--ink);cursor:pointer}
+.chip[aria-pressed=true]{background:var(--ink);color:#fff;border-color:var(--ink)}
+.cmd{font:500 12px/1.55 var(--mono);background:var(--dark);color:#ffffffe5;border-radius:12px;padding:14px 16px;overflow-x:auto;white-space:pre}
+.cmd .k{color:#c4a3ff}.cmd .s{color:#9bd98c}.cmd .o{color:#f3b77b}
+.stat{display:flex;gap:20px;flex-wrap:wrap;color:var(--ink72);font-size:14px}
+.stat b{color:var(--ink);font-weight:500}
+
+/* logo strip */
+.strip{padding:36px 0;overflow:hidden}
+.strip .wrap{display:flex;align-items:center;gap:40px}
+.strip p{font-size:15px;line-height:20px;flex:0 0 224px}
+.mq{overflow:hidden;flex:1;-webkit-mask-image:linear-gradient(90deg,transparent,#000 10%,#000 90%,transparent);mask-image:linear-gradient(90deg,transparent,#000 10%,#000 90%,transparent)}
+.track{display:flex;width:max-content;animation:mq 28s linear infinite}
+.mq:hover .track{animation-play-state:paused}
+.set{display:flex;gap:56px;padding-right:56px;align-items:center}
+.set span{font:500 22px/1 var(--serif);letter-spacing:-.03em;white-space:nowrap;color:var(--ink72)}
+.set span em{font:500 11px/1 var(--mono);letter-spacing:.1em;color:var(--ink48);margin-right:8px;font-style:normal}
+@keyframes mq{to{transform:translateX(-50%)}}
+
+/* showcase */
+.show{display:grid;grid-template-columns:minmax(0,4fr) minmax(0,7fr);gap:56px;align-items:start}
+.steps{display:grid;gap:4px;position:sticky;top:110px}
+.step{all:unset;cursor:pointer;display:grid;gap:8px;padding:22px 24px;border-radius:16px;opacity:.4;transition:opacity .3s,border-color .3s,background .3s;box-sizing:border-box}
+.step h3{font-size:28px}
+.step p{color:var(--ink72);font-size:16px;line-height:24px;display:none}
+.step[aria-selected=true]{opacity:1;background:#fff}
+.step[aria-selected=true] p{display:block}
+.step:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+.stage{display:grid;border-radius:24px;border:1px solid var(--ink06);padding:40px;min-height:480px;align-items:center}
+.stage>div{grid-area:1/1;opacity:0;transform:translateY(12px);pointer-events:none;transition:opacity .5s var(--ease),transform .5s var(--ease)}
+.stage>div.on{opacity:1;transform:none;pointer-events:auto}
+.g1{background:linear-gradient(180deg,#FFF1AC 60%,#FFD7A0)}.g2{background:linear-gradient(180deg,#d6e0ff 60%,#ead7ff)}.g3{background:linear-gradient(180deg,#FFD7C8 60%,#ffe3f1)}
+.win{border-radius:14px;border:1px solid var(--ink10);background:#fffffff0;-webkit-backdrop-filter:blur(16px);backdrop-filter:blur(16px);overflow:hidden}
+.win .in{padding:24px;display:grid;gap:16px}
+.drop{border:1px dashed var(--ink48);border-radius:12px;height:170px;display:grid;place-items:center;text-align:center;color:var(--ink72);font-size:15px}
+.prog{height:8px;border-radius:8px;background:var(--ink06);overflow:hidden}
+.prog i{display:block;height:100%;width:0;background:var(--acc2);border-radius:8px}
+.on .prog i{animation:fill 3.6s var(--ease) infinite}
+@keyframes fill{0%{width:4%}80%,100%{width:100%}}
+.mini{display:flex;gap:2px;height:48px;align-items:center}
+.mini i{flex:1;border-radius:2px;background:var(--acc2);height:var(--h)}
+
+/* bento */
+.bento{display:grid;gap:16px;grid-template-columns:repeat(10,1fr);width:min(1120px,100% - 48px);margin-inline:auto}
+.card{border:1px solid var(--line);border-radius:16px;background:#fff;display:flex;flex-direction:column;overflow:hidden;min-height:400px;transition:border-color .2s}
+.card:hover{border-color:var(--ink10)}
+.card .t{padding:28px 28px 0;display:grid;gap:12px}
+.card .t p{color:var(--ink72);font-size:16px;line-height:24px}
+.lab{justify-self:start;padding:4px 10px;border-radius:20px;background:var(--bg);border:1px solid var(--line);color:var(--ink72)}
+.med{margin:24px;margin-top:auto;border-radius:12px;padding:20px;display:grid;gap:8px;align-content:center;min-height:150px}
+.s6{grid-column:span 6}.s4{grid-column:span 4}
+.m1{background:linear-gradient(180deg,#FFF1AC 60%,#FFD7A0)}.m2{background:linear-gradient(180deg,#d6e0ff,#ead7ff)}.m3{background:linear-gradient(180deg,#FFD7C8,#ffe3f1)}.m4{background:linear-gradient(180deg,#d9f3ea,#e6f6c9)}
+.li{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;border-radius:10px;background:#ffffffcc;border:1px solid var(--ink06);font-size:14px}
+.li .mono{color:var(--ink48)}
+.mg{display:flex;gap:2px;height:60px;align-items:center}
+.mg i{flex:1;border-radius:2px;background:var(--acc2);height:var(--h)}
+.mg i.m{background:var(--ink);opacity:.35}
+
+/* terminal band */
+.band{background:var(--acc);padding:100px 0}
+.band .grid{display:grid;grid-template-columns:1fr 1fr;gap:80px;align-items:center}
+.band .left{display:grid;gap:24px}
+.band ul{list-style:none;padding:0;display:grid;gap:8px;font-size:16px;line-height:24px}
+.band li{position:relative;padding-left:20px}
+.band li:before{content:"";position:absolute;left:0;top:9px;width:7px;height:7px;border-radius:50%;border:1px solid currentColor}
+.term{border-radius:8px;border:1px solid #ffffff14;background:var(--dark);color:#fff;overflow:hidden;min-height:328px;display:flex;flex-direction:column}
+.term .tb{height:40px;padding:0 16px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #ffffff14;font:500 12px/16px var(--mono);color:#ffffffb0}
+.term pre{padding:20px 18px;font:400 12px/1.55 var(--mono);white-space:pre-wrap;word-break:break-word;color:#ffffffe5;font-variant-ligatures:none;tab-size:2}
+.term .k{color:#c4a3ff}.term .s{color:#9bd98c}.term .o{color:#f3b77b}.term .n{color:#f29ac1}.term .d{color:#ffffff80}
+.caret{display:inline-block;width:1px;height:1.1em;background:#fff;opacity:.72;vertical-align:-2px;margin-left:1px;animation:blink 1s step-end infinite}
+@keyframes blink{50%{opacity:0}}
+.dots{display:flex;gap:8px}.dots b{width:12px;height:12px;border-radius:50%;background:#ff5f57}.dots b:nth-child(2){background:#febc2e}.dots b:nth-child(3){background:#28c840}
+.ok{padding:0 18px 20px;font:400 12px/1.55 var(--mono);color:#9bd98c}
+
+/* faq */
+.faq{display:grid;grid-template-columns:minmax(0,450px) minmax(0,1fr);gap:80px;align-items:start}
+details{border-bottom:1px solid var(--line)}
+details:first-child{border-top:1px solid var(--line)}
+summary{list-style:none;display:flex;justify-content:space-between;align-items:center;gap:24px;min-height:76px;padding:28px 10px 28px 0;font:500 16px/20px var(--sans);cursor:pointer;color:var(--dark)}
+summary::-webkit-details-marker{display:none}
+summary:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+.pm{position:relative;width:8px;height:8px;flex:none}
+.pm:before,.pm:after{content:"";position:absolute;left:0;right:0;top:50%;height:1px;background:var(--ink)}
+.pm:after{transform:rotate(90deg);transition:opacity .2s}
+details[open] .pm:after{opacity:0}
+details p{max-width:710px;padding:0 40px 28px 0;font-size:16px;line-height:24px;color:var(--dark)}
+details a{text-underline-offset:.15em}
+
+/* footer */
+footer{margin-top:40px;border-top:1px solid var(--line);padding:40px 0 48px}.fr{display:flex;justify-content:space-between;align-items:flex-start;gap:24px 48px;flex-wrap:wrap}.fr p{max-width:520px;font-size:14px;line-height:22px;color:var(--ink72)}.fr a{text-underline-offset:.15em}.fl{display:flex;gap:24px;flex-wrap:wrap;font-size:14px}.fl a{text-decoration:none;color:var(--ink72)}.fl a:hover{color:var(--ink)}
+.ft{padding-top:80px;display:grid;grid-template-columns:260px 1fr;gap:80px}
+.ft p{font-size:16px;line-height:24px;color:var(--ink72)}
+.cols{display:grid;grid-template-columns:repeat(4,1fr);gap:40px}
+.cols div{display:grid;gap:10px;align-content:start;font-size:16px;line-height:24px}
+.cols b{font-weight:500}
+.cols a{color:var(--ink72);text-decoration:none}.cols a:hover{text-decoration:underline;text-underline-offset:.15em}
+.legal{margin-top:60px;padding-top:24px;border-top:1px solid var(--ink10);display:flex;justify-content:space-between;gap:16px 32px;flex-wrap:wrap;font-size:14px;line-height:22px;color:var(--ink72)}
+.legal p{max-width:760px}
+.mark{margin-top:48px;height:clamp(70px,14.5vw,209px);overflow:hidden;font:400 clamp(90px,19vw,274px)/.9 var(--serif);letter-spacing:-.06em;color:#ffffff6e;text-align:center;white-space:nowrap;pointer-events:none;user-select:none}
+
+/* reveal */
+.rv{opacity:0;transform:translateY(20px);transition:opacity .9s var(--ease),transform .9s var(--ease)}
+.rv.in{opacity:1;transform:none}
+
+@media(max-width:1120px){:root{--col:min(1280px,100% - 80px)}nav{display:none}.strip .wrap{display:grid;gap:20px}.strip p{flex:none}.ft{grid-template-columns:1fr;gap:48px}}
+@media(max-width:900px){.show{grid-template-columns:1fr;gap:24px}.steps{position:static;grid-template-columns:1fr}.stage{padding:20px;min-height:420px}.band .grid,.faq{grid-template-columns:1fr;gap:40px}.band{padding:72px 0}}
+@media(max-width:800px){.s6,.s4{grid-column:span 10}.card{min-height:0}.ctrl{grid-template-columns:1fr}}
+@media(max-width:700px){:root{--col:min(1280px,100% - 48px)}.sec{padding:64px 0}.hero-in{padding:140px 0 48px}.hero .lead{font-size:16px}.cols{grid-template-columns:1fr 1fr;gap:40px 24px}.ft{padding-top:48px}.pill{gap:12px;padding-left:14px}.demo-body{padding:16px}.wave{height:90px;gap:2px}details p{padding-right:24px}summary{gap:16px;padding-right:0}.head{margin-bottom:36px}.legal{margin-top:40px}}
+@media(max-width:1120px){.pill nav a{padding:9px 11px}}
+@media(max-width:560px){.pill nav{display:none}.pill{padding:6px}.btn.sm{height:42px;padding:0 20px}}
+@media(max-width:700px){
+body{font-size:16px}
+.hero-in{padding:128px 0 170px}
+.dsec{margin-top:-120px}
+.lead{font-size:16px}
+h2{font-size:clamp(30px,9vw,40px)}
+.wave{gap:1px;padding:0 8px;height:84px}
+.chip{padding:12px 14px}
+.bento{width:min(1120px,100% - 32px)}
+.card .t{padding:20px 20px 0}.med{margin:16px;padding:16px}
+.step{padding:16px 18px}.step h3{font-size:24px}
+.stage{padding:16px;border-radius:20px;min-height:380px}
+.win .in{padding:16px}.drop{height:140px}
+.band{padding:64px 0}.term{min-height:0}
+summary{min-height:64px;padding:20px 0}
+}
+@media(pointer:coarse){.fx .spot{display:none}}
+
+:root{--ov:clamp(190px,22vw,300px)}
+.frame{border:0;color:#fff;background:radial-gradient(60% 45% at 0% 100%,#ff9b7a 0,#ff9b7a00 70%),radial-gradient(55% 45% at 100% 92%,#ffb38a 0,#ffb38a00 70%),radial-gradient(70% 55% at 50% 72%,#7b5cff 0,#7b5cff00 75%),linear-gradient(180deg,#140b55,#2a17a8 45%,#4a2ee6 76%,#6d52f2)}
+.glow{position:absolute;inset:0;z-index:0;pointer-events:none;background:radial-gradient(480px circle at var(--mx,50%) var(--my,35%),#ffffff1f,transparent 65%)}
+.hero-in{position:relative;z-index:1;gap:20px;padding:clamp(130px,19vh,190px) 0 calc(var(--ov) + 56px)}
+.hero h1{max-width:none;font-size:clamp(36px,10.4vw,164px);line-height:.98;letter-spacing:-.05em;color:#fff}
+.hero .lead{color:#ffffffd9;font-size:clamp(16px,1.6vw,20px);max-width:480px}
+.cap{color:#ffffff99;font-size:13px}
+.btn.lg{height:56px;padding:0 28px;font-size:15px}
+.dsec{margin-top:calc(var(--ov)*-1)}
+.demo{border-color:#ffffff59}
+@media(pointer:coarse){.fx .spot{display:none}}
+
+.med{background-size:100% 170%;animation:drift 10s ease-in-out infinite alternate;transition:transform .6s var(--ease)}
+@keyframes drift{from{background-position:0 0}to{background-position:0 100%}}
+@media(hover:hover){.card:hover .med{transform:translateY(-4px)}}
+.card{position:relative}
+.card:before{content:"";position:absolute;inset:0;z-index:0;background:radial-gradient(300px circle at var(--mx,50%) var(--my,0),#7b5cff17,transparent 70%);opacity:0;transition:opacity .4s;pointer-events:none}
+.card:hover:before{opacity:1}.card>*{position:relative;z-index:1}
+.bento article:first-child .li{opacity:.8;transition:transform .6s var(--ease),opacity .4s,background .4s}
+.bento article:first-child .li.sel{opacity:1;background:#fff;transform:translateX(6px)}
+.m2 .prog i{animation:fill 4.5s var(--ease) infinite}
+.m3 .li .mono:before{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;background:#28c840;margin-right:7px;vertical-align:1px;animation:pulse 2.4s ease-in-out infinite}
+.m3 .li:nth-child(2) .mono:before{animation-delay:.8s}
+@keyframes pulse{0%,100%{opacity:.35;transform:scale(.8)}50%{opacity:1;transform:scale(1.15)}}
+.mg i{animation:br 3.2s ease-in-out infinite alternate}.mg i:nth-child(3n){animation-delay:-.8s}.mg i:nth-child(5n){animation-delay:-1.6s}
+.mg i.m{animation:mgp 2.4s ease-in-out infinite alternate}
+@keyframes br{from{transform:scaleY(.92)}to{transform:scaleY(1.08)}}@keyframes mgp{from{transform:scaleY(.55)}to{transform:scaleY(1.5)}}
+.bento article:last-child .li{animation:sl 5s var(--ease) infinite}.bento article:last-child .li:nth-child(2){animation-delay:.35s}.bento article:last-child .li:nth-child(3){animation-delay:.7s}
+@keyframes sl{0%{opacity:0;transform:translateX(-14px)}14%,86%{opacity:1;transform:none}100%{opacity:0}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}.label--duplicate{display:none}.rv{opacity:1;transform:none}.track{overflow-x:auto}}
+</style>
+</head>
+<body>
+<header id="hd"><div class="pill"><div class="pbar"><i></i></div>
+  <nav aria-label="Primary"><a href="#how">How it works</a><a href="#features">Features</a><a href="#terminal">Command</a><a href="#faq">FAQ</a></nav>
+  <a class="btn sm" href="https://github.com/sashminea/auto-editor-gui/releases/latest"><span class="vp"><span class="label--primary">Download</span><span class="label--duplicate" aria-hidden="true">Download</span></span></a>
+</div></header>
+
+<main id="top">
+<section class="hero"><div class="frame"><i class="glow" aria-hidden="true"></i><div class="wrap hero-in">
+  <h1 class="rv">Cut the silence.<br>Keep the story.</h1>
+  <p class="lead rv">Automatically remove silence from your videos, then export a clean cut or a timeline for your editor.</p>
+  <div class="rv"><a class="btn white lg" href="https://github.com/sashminea/auto-editor-gui/releases/latest"><span class="vp"><span class="label--primary">Download for Windows</span><span class="label--duplicate" aria-hidden="true">Download for Windows</span></span></a></div>
+  <p class="cap rv">Windows 10 &amp; 11</p>
+</div></div></section><section class="dsec"><div class="wrap"><div class="demo rv" aria-label="Interactive silence-cutting preview">
+    <div class="bar"><b></b><b></b><b></b></div>
+    <div class="demo-body">
+      <div class="wave" id="wave" aria-hidden="true"></div>
+      <div class="stat"><span>Kept <b id="kept">—</b></span><span>Cut <b id="cutp">—</b></span></div>
+      <div class="ctrl">
+        <label><span><span class="mono">Loudness</span><b id="lv">-19dB</b></span><input id="loud" type="range" min="-40" max="-5" value="-19" aria-label="Loudness threshold in decibels"></label>
+        <label><span><span class="mono">Margin</span><b id="mv">0.2s</b></span><input id="marg" type="range" min="0" max="10" value="2" aria-label="Margin in tenths of a second"></label>
+      </div>
+      <div class="chips" id="chips" role="group" aria-label="Export as"></div>
+      <div class="cmd" id="demoCmd" aria-live="polite"></div>
+    </div>
+  </div>
+</div></section>
+
+<section class="strip" aria-label="Exports to">
+  <div class="wrap"><p>Export a timeline for the editors you already use.</p>
+  <div class="mq"><div class="track" id="mqt"><div class="set" id="mqs"></div></div></div></div>
+</section>
+
+<section class="sec" id="how"><div class="wrap">
+  <div class="head"><p class="mono rv" style="color:var(--ink72)">How it works</p><h2 class="rv">Three steps from raw footage to rough cut</h2></div>
+  <div class="show">
+    <div class="steps rv" role="tablist" aria-label="Steps">
+      <button class="step" role="tab" aria-selected="true" aria-controls="p0" id="t0"><span class="mono">01</span><h3>Pick a file</h3><p>Drop a video onto the preview or press Select video file. If Chromium can’t preview a format, you can still export.</p></button>
+      <button class="step" role="tab" aria-selected="false" aria-controls="p1" id="t1"><span class="mono">02</span><h3>Tune loudness and margin</h3><p>Anything quieter than the loudness is cut. Margin keeps a little breathing room around the loud parts.</p></button>
+      <button class="step" role="tab" aria-selected="false" aria-controls="p2" id="t2"><span class="mono">03</span><h3>Apply, then export</h3><p>Press Apply to see the generated command, then Export. Watch live progress, or Cancel to stop.</p></button>
+    </div>
+    <div class="stage g1 rv" id="stage">
+      <div class="on" id="p0" role="tabpanel" aria-labelledby="t0"><div class="win"><div class="bar"><b></b><b></b><b></b></div><div class="in"><div class="drop"><div>Drop a video here<br><span class="mono" style="color:var(--ink48)">or</span><br><span class="btn sm" style="margin-top:8px">Select video file</span></div></div></div></div></div>
+      <div id="p1" role="tabpanel" aria-labelledby="t1"><div class="win"><div class="bar"><b></b><b></b><b></b></div><div class="in"><div class="mini" id="mini" aria-hidden="true"></div><label class="mono" style="display:flex;justify-content:space-between">Loudness <b>-19dB</b></label><div class="prog"><i style="width:46%;animation:none"></i></div><label class="mono" style="display:flex;justify-content:space-between">Margin <b>0s</b></label><div class="prog"><i style="width:12%;animation:none"></i></div></div></div></div>
+      <div id="p2" role="tabpanel" aria-labelledby="t2"><div class="win"><div class="bar"><b></b><b></b><b></b></div><div class="in"><div class="cmd">auto_editor "my-video.mp4" --export premiere --edit audio:-19dB --margin 0s</div><div class="prog"><i></i></div><div class="row"><span class="btn sm">Export</span><span class="btn sm ghostd">Cancel</span><span class="btn sm ghostd">Open output folder</span></div></div></div></div>
+    </div>
+  </div>
+</div></section>
+
+<section class="sec" id="features" style="padding-top:0"><div class="wrap">
+  <div class="head"><p class="mono rv" style="color:var(--ink72)">Features</p><h2 class="rv">Built for how editors actually work</h2></div></div>
+  <div class="bento">
+    <article class="card s6 rv"><div class="t"><span class="lab mono">Export methods</span><p>Export a regular media file, or an XML timeline for Adobe Premiere Pro, DaVinci Resolve, Final Cut Pro or Shotcut. Timelines open as “Auto-Editor Media Group”.</p></div><div class="med m1"><div class="li">default<span class="mono">media file</span></div><div class="li">premiere<span class="mono">xml timeline</span></div><div class="li">resolve<span class="mono">xml timeline</span></div></div></article>
+    <article class="card s4 rv"><div class="t"><span class="lab mono">Live progress</span><p>Watch the run stream in, open the output panel to see what auto-editor prints, or cancel mid-export.</p></div><div class="med m2"><div class="prog"><i></i></div><div class="li">Exporting<span class="mono">live</span></div></div></article>
+    <article class="card s4 rv"><div class="t"><span class="lab mono">Bundled</span><p>Python and auto-editor ship inside the app. The installer needs no admin rights.</p></div><div class="med m3"><div class="li">python<span class="mono">bundled</span></div><div class="li">auto_editor<span class="mono">28.0.2</span></div></div></article>
+    <article class="card s6 rv"><div class="t"><span class="lab mono">Margin control</span><p>Keep a beat of room around every loud moment so cuts never feel clipped. Empty fields are never passed to auto-editor.</p></div><div class="med m4"><div class="mg" id="mg" aria-hidden="true"></div></div></article>
+    <article class="card s6 rv"><div class="t"><span class="lab mono">Transparent</span><p>The app builds the command for you and shows it before it runs, so you always know what will happen.</p></div><div class="med" style="background:var(--dark)"><div class="cmd" style="padding:0;background:none"><span class="k">auto_editor</span> <span class="s">"my-video.mp4"</span> --export premiere --edit audio:-19dB --margin 0s<span class="caret"></span></div></div></article>
+    <article class="card s4 rv"><div class="t"><span class="lab mono">Clip sequence</span><p>Prefer separate files? Export multiple numbered media files instead.</p></div><div class="med m1"><div class="li">clip 1<span class="mono">.mp4</span></div><div class="li">clip 2<span class="mono">.mp4</span></div><div class="li">clip 3<span class="mono">.mp4</span></div></div></article>
+  </div>
+</section>
+
+<section class="band" id="terminal"><div class="wrap grid">
+  <div class="left"><p class="mono" style="color:var(--ink72)">Under the hood</p><h2>One command, built for you</h2>
+    <p class="lead" style="color:var(--ink)">The GUI assembles an <code style="font-family:var(--mono);font-size:15px">auto_editor</code> command from your inputs, runs it through the bundled Python module, and streams the result back.</p>
+    <ul><li>Six export methods, one flag to switch.</li><li>Finer options live on the other sidebar pages.</li><li>Output lands in the output folder, one click away.</li></ul>
+    <div class="row"><a class="btn" href="https://github.com/sashminea/auto-editor-gui/releases/latest"><span class="vp"><span class="label--primary">Download</span><span class="label--duplicate" aria-hidden="true">Download</span></span></a>
+    <a class="btn ghostd" style="--bd:#2720381f" href="https://github.com/WyattBlue/auto-editor"><span class="vp"><span class="label--primary">About auto-editor</span><span class="label--duplicate" aria-hidden="true">About auto-editor</span></span></a></div></div>
+  <div class="term" aria-label="Animated command example"><div class="tb"><span class="dots"><b></b><b></b><b></b></span></div>
+<pre id="tp" aria-hidden="true"></pre><div class="ok" id="ok" aria-hidden="true"></div></div>
+</div></section>
+
+<section class="sec" id="faq"><div class="wrap faq">
+  <h2 class="rv">Frequently asked questions</h2>
+  <div class="rv">
+    <details open><summary>Do I need to install Python or auto-editor?<i class="pm"></i></summary><p>No. Python and auto-editor are bundled with the app, so end users never install them. Download the Windows installer and run it. It does not need admin rights.</p></details>
+    <details><summary>Which editors can I export to?<i class="pm"></i></summary><p>Adobe Premiere Pro, DaVinci Resolve (FCP7 XML), Final Cut Pro and Shotcut timelines, plus a regular edited media file or multiple numbered clips.</p></details>
+    <details><summary>Windows says “Windows protected your PC”. Is that expected?<i class="pm"></i></summary><p>The installer is not code-signed yet, so SmartScreen may show that warning. Click More info, then Run anyway.</p></details>
+    <details><summary>Which systems are supported?<i class="pm"></i></summary><p>Windows 10 or 11, 64-bit. Developers can also run it from source with Node.js 18+ and Python 3.10+.</p></details>
+    <details><summary>The preview says the format can’t be previewed.<i class="pm"></i></summary><p>Chromium can’t play every format, for example some .mkv and .avi files. You can still export them.</p></details>
+    <details><summary>Where does it come from?<i class="pm"></i></summary><p>The GUI wraps <a href="https://github.com/WyattBlue/auto-editor">auto-editor</a> by Wyatt Blue and is built with Electron, React, TypeScript and Vite. See the repository’s LICENSE file for terms.</p></details>
+  </div>
+</div></section>
+</main>
+
+<footer><div class="wrap fr"><p>Auto-Editor GUI is an independent open-source project built around <a href="https://github.com/WyattBlue/auto-editor">auto-editor</a> by Wyatt Blue. See the repository’s LICENSE for terms.</p><nav class="fl" aria-label="Footer"><a href="https://github.com/sashminea/auto-editor-gui/releases/latest">Download</a><a href="https://github.com/sashminea/auto-editor-gui">GitHub</a><a href="#faq">FAQ</a><a href="https://www.linkedin.com/in/sashminadhikari/">LinkedIn</a></nav></div></footer>
+
+<script>
+(()=>{
+const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)];
+const rm=matchMedia('(prefers-reduced-motion:reduce)').matches;
+// header
+const hd=$('#hd'),pb=$('#hd .pbar i'),nav=$('.pill nav'),ind=document.createElement('i');ind.className='ind';nav.prepend(ind);
+const links=[...nav.querySelectorAll('a')],secs=links.map(a=>$(a.getAttribute('href')));let curL=null,ly=0;
+const mv=a=>{if(!a){ind.style.opacity=0;return}ind.style.opacity=1;ind.style.width=a.offsetWidth+'px';ind.style.transform='translateX('+a.offsetLeft+'px)'};
+links.forEach(a=>{a.addEventListener('mouseenter',()=>mv(a));a.addEventListener('focus',()=>mv(a))});nav.addEventListener('mouseleave',()=>mv(curL));
+const sc=()=>{const y=scrollY,mx=document.documentElement.scrollHeight-innerHeight;hd.classList.toggle('on',y>60);hd.classList.toggle('hide',y>ly&&y>240);ly=y;pb.style.setProperty('--p',mx>0?y/mx:0);let c=null;secs.forEach((s,i)=>{const r=s.getBoundingClientRect();if(r.top<innerHeight*.4&&r.bottom>innerHeight*.4)c=links[i]});if(c!==curL){curL=c;links.forEach(a=>a.classList.toggle('cur',a===c));mv(c)}};
+addEventListener('scroll',sc,{passive:true});addEventListener('resize',()=>mv(curL));sc();
+// hero cursor glow
+const fr=$('.frame');let gx=.5,gy=.35,tx=.5,ty=.35,seen=true;
+if(!rm){new IntersectionObserver(e=>seen=e[0].isIntersecting).observe(fr);
+fr.addEventListener('pointermove',e=>{const r=fr.getBoundingClientRect();tx=(e.clientX-r.left)/r.width;ty=(e.clientY-r.top)/r.height});
+const tick=()=>{if(seen){const r=fr.getBoundingClientRect();gx+=(tx-gx)*.07;gy+=(ty-gy)*.07;fr.style.setProperty('--mx',gx*r.width+'px');fr.style.setProperty('--my',gy*r.height+'px')}requestAnimationFrame(tick)};tick()}
+const m1=$('.med.m1');if(m1&&!rm){const r=[...m1.querySelectorAll('.li')];let i=0;r[0].classList.add('sel');setInterval(()=>{r[i].classList.remove('sel');i=(i+1)%r.length;r[i].classList.add('sel')},1800)}
+$$('.card').forEach(c=>c.addEventListener('pointermove',e=>{const r=c.getBoundingClientRect();c.style.setProperty('--mx',e.clientX-r.left+'px');c.style.setProperty('--my',e.clientY-r.top+'px')}));
+// reveal
+const io=new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target)}}),{threshold:.12,rootMargin:'0px 0px -6% 0px'});
+$$('.rv').forEach((el,i)=>{el.style.transitionDelay=(i%3)*70+'ms';io.observe(el)});
+// marquee
+const tools=['Premiere Pro','DaVinci Resolve','Final Cut Pro','Shotcut','Media file','Clip sequence'];
+const set=$('#mqs');set.innerHTML=tools.map((t,i)=>`<span><em>0${i+1}</em>${t}</span>`).join('');
+$('#mqt').appendChild(set.cloneNode(true)).setAttribute('aria-hidden','true');
+// waveform demo
+const N=64,amps=[];let s=7;const rnd=()=>(s=(s*16807)%2147483647)/2147483647;
+for(let i=0;i<N;i++){const speech=Math.sin(i/5)+Math.sin(i/2.3)*.5>-.2;amps.push(speech?.35+rnd()*.65:rnd()*.28)}
+const wave=$('#wave');wave.innerHTML=amps.map(a=>`<i style="--h:${Math.round(10+a*100)}px"></i>`).join('');
+const bars=[...wave.children];
+const exps=[['premiere','Premiere Pro'],['resolve','Resolve'],['final-cut-pro','Final Cut Pro'],['shotcut','Shotcut'],['default','Media file']];
+let ex=0;const chips=$('#chips');
+exps.forEach((e,i)=>{const b=document.createElement('button');b.className='chip';b.textContent=e[1];b.setAttribute('aria-pressed',i==0);b.onclick=()=>{ex=i;[...chips.children].forEach((c,j)=>c.setAttribute('aria-pressed',j==i));upd()};chips.appendChild(b)});
+const loud=$('#loud'),marg=$('#marg');
+function upd(){
+  const db=+loud.value,m=marg.value/10;
+  $('#lv').textContent=db+'dB';$('#mv').textContent=m+'s';
+  const thr=(db+40)/35*.9;let cut=0;
+  const keep=amps.map(a=>a>=thr);
+  const w=Math.round(m*5);
+  const kk=keep.map((k,i)=>{for(let j=-w;j<=w;j++)if(keep[i+j])return true;return false});
+  bars.forEach((b,i)=>{b.classList.toggle('cut',!kk[i]);if(!kk[i])cut++});
+  const p=Math.round(cut/N*100);$('#cutp').textContent=p+'%';$('#kept').textContent=(100-p)+'%';
+  const f=exps[ex][0];
+  $('#demoCmd').innerHTML=`<span class="k">auto_editor</span> <span class="s">"interview.mp4"</span> --export ${f} --edit audio:${db}dB --margin ${m}s`;
+}
+loud.oninput=marg.oninput=upd;upd();
+// showcase
+const tabs=$$('.step'),panels=['p0','p1','p2'].map(id=>document.getElementById(id));let cur=0,timer;
+const cl=['g1','g2','g3'];
+function sel(i){cur=i;tabs.forEach((t,j)=>t.setAttribute('aria-selected',j==i));panels.forEach((p,j)=>p.classList.toggle('on',j==i));const st=$('#stage');st.classList.remove(...cl);st.classList.add(cl[i])}
+tabs.forEach((t,i)=>t.onclick=()=>{sel(i);clearInterval(timer)});
+if(!rm)timer=setInterval(()=>sel((cur+1)%3),6000);
+$('#mini').innerHTML=amps.slice(0,48).map(a=>`<i style="--h:${Math.round(6+a*40)}px"></i>`).join('');
+$('#mg').innerHTML=Array.from({length:40},(_,i)=>{const a=amps[i];const l=a>.55;const mm=!l&&(amps[i-1]>.55||amps[i+1]>.55||amps[i-2]>.55||amps[i+2]>.55);return `<i class="${mm?'m':''}" style="--h:${l?Math.round(14+a*44):mm?10:4}px"></i>`}).join('');
+// terminal typewriter
+const flags=['premiere','resolve','final-cut-pro','shotcut','clip-sequence','default'];
+const tp=$('#tp'),ok=$('#ok');let fi=0;
+const draw=t=>{tp.innerHTML=`<span class="d">$</span> <span class="k">auto_editor</span> <span class="s">"my-video.mp4"</span> <span class="o">--export</span> <span style="color:#fff">${t}</span><span class="caret"></span> <span class="o">--edit</span> audio:<span class="n">-19</span>dB <span class="o">--margin</span> <span class="n">0</span>s`};
+const wait=ms=>new Promise(r=>setTimeout(r,ms));
+let vis=true;document.addEventListener('visibilitychange',()=>vis=!document.hidden);
+async function loop(){
+  draw(flags[0]);ok.textContent='✓ Done — open output folder';
+  if(rm){setInterval(()=>{fi=(fi+1)%flags.length;draw(flags[fi])},3200);return}
+  for(;;){
+    await wait(3200);while(!vis)await wait(500);
+    let c=flags[fi];ok.textContent='';
+    while(c.length){c=c.slice(0,-1);draw(c);await wait(28)}
+    fi=(fi+1)%flags.length;const n=flags[fi];
+    for(let i=1;i<=n.length;i++){draw(n.slice(0,i));await wait(38)}
+    ok.textContent='✓ Done — open output folder';
+  }
+}
+loop();
+})();
+</script>
+</body>
+</html>
