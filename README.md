@@ -4,7 +4,7 @@ A desktop app for [auto-editor](https://github.com/WyattBlue/auto-editor) that c
  
 The app builds the auto-editor command for you, shows it, runs it, and reports live progress. Nothing needs to be installed: Python and auto-editor are bundled.
 
-<img width="1535" height="862" alt="image" src="https://github.com/user-attachments/assets/50b6adc6-5b50-42d3-849d-ccac365c642b" />
+<img width="1535" height="862" alt="image" src="https://github.com/user-attachments/assets/89059e36-9341-4080-a135-0e8594996a5b" />
 
 
 ## Download
