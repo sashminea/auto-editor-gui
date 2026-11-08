@@ -1,6 +1,6 @@
 {
   "name": "auto-editor-gui",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "A desktop GUI for auto-editor: cut silence and dead space from video and audio.",
   "author": "sashminea",
   "license": "ISC",
@@ -30,6 +30,7 @@
     "files": [
       "dist/main.js",
       "dist/preload.js",
+      "dist/waveform.js",
       "frontend/dist/**/*",
       "package.json"
     ],
