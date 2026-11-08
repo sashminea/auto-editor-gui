@@ -46,40 +46,40 @@
   }
 
   /* Dark theme (the default; index.html puts class="dark" on <html>) */
-  .dark {
-    --background: 260 32% 9%;           /* #15101f */
-    --foreground: 48 38% 97%;
-    --card: 260 28% 12%;
-    --card-foreground: 48 38% 97%;
-    --popover: 260 28% 12%;
-    --popover-foreground: 48 38% 97%;
-    --primary: 259 100% 81%;
-    --primary-foreground: 260 32% 9%;
-    --secondary: 260 22% 16%;
-    --secondary-foreground: 48 38% 97%;
-    --muted: 260 22% 16%;
-    --muted-foreground: 255 12% 66%;
-    --accent: 260 30% 19%;
-    --accent-foreground: 48 38% 97%;
-    --destructive: 0 62% 45%;
-    --destructive-foreground: 0 0% 100%;
-    --border: 260 20% 20%;
-    --input: 260 18% 26%;
-    --ring: 259 100% 81%;
-    --chart-1: 259 100% 81%;
-    --chart-2: 160 60% 45%;
-    --chart-3: 27 87% 67%;
-    --chart-4: 43 74% 66%;
-    --chart-5: 340 75% 55%;
-    --sidebar-background: 260 32% 9%;
-    --sidebar-foreground: 48 38% 97%;
-    --sidebar-primary: 259 100% 81%;
-    --sidebar-primary-foreground: 260 32% 9%;
-    --sidebar-accent: 260 30% 19%;
-    --sidebar-accent-foreground: 48 38% 97%;
-    --sidebar-border: 260 20% 20%;
-    --sidebar-ring: 259 100% 81%;
-  }
+.dark {
+  --background: 0 0% 4%;            /* #0a0a0a */
+  --foreground: 0 0% 96%;
+  --card: 0 0% 8%;
+  --card-foreground: 0 0% 96%;
+  --popover: 0 0% 8%;
+  --popover-foreground: 0 0% 96%;
+  --primary: 259 100% 81%;          /* lavender accent stays */
+  --primary-foreground: 0 0% 4%;
+  --secondary: 0 0% 13%;
+  --secondary-foreground: 0 0% 96%;
+  --muted: 0 0% 13%;
+  --muted-foreground: 0 0% 64%;
+  --accent: 0 0% 16%;
+  --accent-foreground: 0 0% 96%;
+  --destructive: 0 62% 45%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 0 0% 16%;
+  --input: 0 0% 22%;
+  --ring: 259 100% 81%;
+  --chart-1: 259 100% 81%;
+  --chart-2: 160 60% 45%;
+  --chart-3: 27 87% 67%;
+  --chart-4: 43 74% 66%;
+  --chart-5: 340 75% 55%;
+  --sidebar-background: 0 0% 4%;
+  --sidebar-foreground: 0 0% 96%;
+  --sidebar-primary: 259 100% 81%;
+  --sidebar-primary-foreground: 0 0% 4%;
+  --sidebar-accent: 0 0% 16%;
+  --sidebar-accent-foreground: 0 0% 96%;
+  --sidebar-border: 0 0% 16%;
+  --sidebar-ring: 259 100% 81%;
+}
 }
 
 @layer base {

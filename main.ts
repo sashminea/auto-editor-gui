@@ -491,7 +491,7 @@ ipcMain.on("set-title-bar-theme", (e, theme: string) => {
   if (process.platform === "darwin") return;
   BrowserWindow.fromWebContents(e.sender)?.setTitleBarOverlay(
     theme === "dark"
-      ? { color: "#15101f", symbolColor: "#fbfaf6" }
+      ? { color: "#0a0a0a", symbolColor: "#f5f5f5" }
       : { color: "#fbfaf6", symbolColor: "#272038" },
   );
 });
