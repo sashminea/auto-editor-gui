@@ -3,8 +3,16 @@ import { FileIcon, VideoIcon, OpenInNewWindowIcon } from "@radix-ui/react-icons"
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { isPlaceholder, pickVideo } from "@/lib/files";
+
+const EXPORTS: [string, string][] = [
+  ["default", "Default (MP4)"],
+  ["clip-sequence", "Clip Sequence"],
+  ["premiere", "Premiere Pro XML"],
+  ["resolve-fcp7", "Resolve FCP7 XML"],
+  ["final-cut-pro", "Final Cut Pro XML"],
+  ["shotcut", "Shotcut MLT"],
+];
 
 interface CardWithFormProps {
   onFileSelect: (file: { name: string; path: string }) => void;
@@ -27,9 +35,9 @@ const CardWithForm: React.FC<CardWithFormProps> = ({
   const hasFile = !isPlaceholder(selectedFile);
 
   return (
-    <Card className="w-full rounded-md shadow-none">
+    <Card className="w-full">
       <CardHeader className="border-b px-4 py-3">
-        <CardTitle className="text-sm">Source</CardTitle>
+        <CardTitle className="mono-label text-muted-foreground">Source</CardTitle>
       </CardHeader>
       <CardContent className="grid gap-4 p-4">
         <div className="grid gap-2">
@@ -58,20 +66,14 @@ const CardWithForm: React.FC<CardWithFormProps> = ({
         </div>
 
         <div className="grid gap-1.5">
-          <Label htmlFor="framework">Export as</Label>
-          <Select value={exportAs} onValueChange={onExportAsChange}>
-            <SelectTrigger id="framework">
-              <SelectValue placeholder="Premiere Pro XML" />
-            </SelectTrigger>
-            <SelectContent position="popper">
-              <SelectItem value="default">Default (MP4) </SelectItem>
-              <SelectItem value="clip-sequence">Clip Sequence</SelectItem>
-              <SelectItem value="premiere">Premiere Pro XML</SelectItem>
-              <SelectItem value="resolve-fcp7">Resolve FCP7 XML</SelectItem>
-              <SelectItem value="final-cut-pro">Final Cut Pro XML</SelectItem>
-              <SelectItem value="shotcut">Shotcut MLT</SelectItem>
-            </SelectContent>
-          </Select>
+          <Label>Export as</Label>
+          <div className="flex flex-wrap gap-1.5" role="group" aria-label="Export as">
+            {EXPORTS.map(([value, label]) => (
+              <button key={value} type="button" className="chip" aria-pressed={exportAs === value} onClick={() => onExportAsChange(value)}>
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
       </CardContent>
     </Card>

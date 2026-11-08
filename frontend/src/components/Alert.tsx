@@ -36,7 +36,7 @@ const AlertComponent: React.FC<AlertProps> = ({ type, message, onDismiss, action
     <div className="fixed bottom-4 right-4 z-50 w-[min(26rem,calc(100vw-2rem))]" role={type === 'error' ? 'alert' : 'status'}>
       <Alert
         variant={config.variant}
-        className={cn("flex items-start gap-3 bg-card shadow-lg", type === 'success' && "border-emerald-500/50")}
+        className={cn("flex items-start gap-3 rounded-2xl bg-card/95 shadow-xl backdrop-blur-xl", type === 'success' && "border-emerald-500/50")}
       >
         <span className={cn("mt-0.5 shrink-0", type === 'success' && "text-emerald-500", type === 'normal' && "text-primary")}>
           {config.icon}

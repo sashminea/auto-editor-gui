@@ -24,9 +24,9 @@ const ConsolePanel: React.FC<ConsolePanelProps> = ({ running, progress, status, 
   const pct = progress ?? 0;
 
   return (
-    <Card className="shrink-0 rounded-md shadow-none">
+    <Card className="shrink-0">
       <CardHeader className="flex-row items-center justify-between space-y-0 px-4 py-2">
-        <CardTitle className="text-sm">Progress</CardTitle>
+        <CardTitle className="mono-label text-muted-foreground">Progress</CardTitle>
         <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
           {open ? <ChevronUpIcon /> : <ChevronDownIcon />} {open ? "Hide output" : "Show output"}
         </Button>
@@ -35,7 +35,7 @@ const ConsolePanel: React.FC<ConsolePanelProps> = ({ running, progress, status, 
         {showBar ? (
           <div className="grid gap-1.5">
             <div
-              className="h-1.5 w-full overflow-hidden rounded-full bg-muted"
+              className="h-2 w-full overflow-hidden rounded-full bg-foreground/[0.06]"
               role="progressbar"
               aria-valuemin={0}
               aria-valuemax={100}
@@ -58,7 +58,7 @@ const ConsolePanel: React.FC<ConsolePanelProps> = ({ running, progress, status, 
         {open && (
           <div
             ref={logRef}
-            className="h-32 overflow-auto rounded-md border bg-background p-3 font-mono text-xs leading-relaxed text-muted-foreground"
+            className="h-32 overflow-auto rounded-xl bg-[#15101f] p-4 font-mono text-xs leading-relaxed text-white/70"
           >
             {lines.length ? lines.map((l, i) => <div key={i} className="whitespace-pre-wrap break-all">{l}</div>) : "No output yet."}
           </div>

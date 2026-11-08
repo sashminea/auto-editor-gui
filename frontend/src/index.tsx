@@ -1,3 +1,5 @@
+import "@fontsource-variable/geist";
+import "@fontsource-variable/geist-mono";
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import Layout from './components/Layout';

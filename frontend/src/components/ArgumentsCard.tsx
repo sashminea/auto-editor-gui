@@ -19,17 +19,17 @@ const CardWithArguments: React.FC<CardWithArgumentsProps> = ({ onExport, onApply
   const dirty = !!applied && (applied.loudness !== loudness || applied.margin !== margin);
 
   return (
-    <Card className="w-full rounded-md shadow-none">
+    <Card className="w-full">
       <CardHeader className="border-b px-4 py-3">
-        <CardTitle className="text-sm">Adjust arguments</CardTitle>
+        <CardTitle className="mono-label text-muted-foreground">Adjust arguments</CardTitle>
       </CardHeader>
       {/* Enter in either field applies the values */}
       <CardContent
         className="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2 lg:grid-cols-1"
         onKeyDown={(e) => { if (e.key === "Enter") onApply(loudness, margin); }}
       >
-        <ArgumentInput label="Loudness" id="loudness" placeholder="-19" suffix="dB" value={loudness} onChange={(e) => setLoudness(Number(e.target.value))} />
-        <ArgumentInput label="Margin" id="margin" placeholder="0" suffix="s" value={margin} onChange={(e) => setMargin(Number(e.target.value))} />
+        <ArgumentInput label="Loudness" id="loudness" placeholder="-19" suffix="dB" slider={{ min: -40, max: -5, step: 1 }} value={loudness} onChange={(e) => setLoudness(Number(e.target.value))} />
+        <ArgumentInput label="Margin" id="margin" placeholder="0" suffix="s" slider={{ min: 0, max: 1, step: 0.1 }} value={margin} onChange={(e) => setMargin(Number(e.target.value))} />
       </CardContent>
       <CardFooter className="flex-col items-stretch gap-3 p-4 pt-0">
         <p className="flex h-4 items-center gap-2 text-xs text-muted-foreground" aria-live="polite">

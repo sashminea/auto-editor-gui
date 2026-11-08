@@ -487,8 +487,8 @@ ipcMain.on("set-title-bar-theme", (e, theme: string) => {
   if (process.platform === "darwin") return;
   BrowserWindow.fromWebContents(e.sender)?.setTitleBarOverlay(
     theme === "dark"
-      ? { color: "#212121", symbolColor: "#e6e6e6" }
-      : { color: "#fcfcfc", symbolColor: "#1f1f1f" },
+      ? { color: "#15101f", symbolColor: "#fbfaf6" }
+      : { color: "#fbfaf6", symbolColor: "#272038" },
   );
 });
 
@@ -527,10 +527,10 @@ function createWindow() {
     minHeight: 600,
     show: false, // shown on ready-to-show, so there is no white flash
     title: "Auto-Editor GUI",
-    backgroundColor: "#151515",
+    backgroundColor: "#15101f",
     autoHideMenuBar: true,
     titleBarStyle: "hidden",
-    titleBarOverlay: { color: "#212121", symbolColor: "#e6e6e6", height: 40 },
+    titleBarOverlay: { color: "#15101f", symbolColor: "#fbfaf6", height: 40 },
     webPreferences: {
       preload: PRELOAD,
       contextIsolation: true,

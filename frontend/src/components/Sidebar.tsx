@@ -27,15 +27,14 @@ const Item: React.FC<{ id: PageId; active: boolean; count?: number; onClick: () 
       title={`${title} (${mod}${idx + 1})`}
       aria-current={active ? "page" : undefined}
       className={cn(
-        "relative flex h-9 w-full items-center justify-center gap-3 rounded-md px-2.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring lg:justify-start",
-        active && "bg-accent font-medium text-foreground"
+        "relative flex h-10 w-full items-center justify-center gap-3 rounded-full px-3 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring lg:justify-start",
+        active && "bg-gradient-to-br from-[#efe9ff] to-[#ffe9df] text-foreground dark:from-primary/20 dark:to-[#ff9b7a]/10"
       )}
     >
-      {active && <span className="absolute inset-y-1.5 left-0 w-0.5 rounded-full bg-primary" />}
       <span className="shrink-0">{icons[id]}</span>
       <span className="hidden flex-1 text-left lg:inline">{title}</span>
       {!!count && (
-        <span className="hidden rounded-full bg-primary/15 px-1.5 text-xs tabular-nums text-primary lg:inline" aria-label={`${count} options set`}>
+        <span className="hidden rounded-full bg-foreground px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-background lg:inline" aria-label={`${count} options set`}>
           {count}
         </span>
       )}
@@ -45,10 +44,10 @@ const Item: React.FC<{ id: PageId; active: boolean; count?: number; onClick: () 
 };
 
 const Sidebar: React.FC<SidebarProps> = ({ page, onChange, counts }) => (
-  <nav aria-label="Pages" className="flex w-14 shrink-0 flex-col gap-1 border-r bg-card p-2 lg:w-52">
+  <nav aria-label="Pages" className="flex w-14 shrink-0 flex-col gap-1 border-r bg-background p-2 lg:w-52">
     <Item id="quick" active={page === "quick"} onClick={() => onChange("quick")} />
     <div className="mx-1 my-2 border-t" />
-    <p className="mb-1 hidden px-2.5 text-xs font-medium uppercase tracking-wide text-muted-foreground lg:block">More options</p>
+    <p className="mono-label mb-1 hidden px-3 text-muted-foreground lg:block">More options</p>
     {PAGES.filter((p) => p.id !== "quick").map((p) => (
       <Item key={p.id} id={p.id} active={page === p.id} count={counts[p.id]} onClick={() => onChange(p.id)} />
     ))}

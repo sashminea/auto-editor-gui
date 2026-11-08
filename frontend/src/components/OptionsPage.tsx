@@ -21,15 +21,15 @@ const OptionsPage: React.FC<OptionsPageProps> = ({ title, blurb, defs, values, o
       <div className="mx-auto grid max-w-3xl gap-3">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <h1 className="text-base font-semibold">{title}</h1>
+            <h1 className="text-2xl font-medium tracking-[-0.04em]">{title}</h1>
             <p className="text-sm text-muted-foreground">{blurb}</p>
           </div>
           <Button variant="ghost" size="sm" disabled={!anySet} onClick={() => onReset(defs.map((d) => d.flag))}>Reset page</Button>
         </div>
         {children}
-        <Card className="rounded-md shadow-none">
+        <Card >
           <CardHeader className="border-b px-4 py-3">
-            <CardTitle className="text-sm">Options</CardTitle>
+            <CardTitle className="mono-label text-muted-foreground">Options</CardTitle>
           </CardHeader>
           <CardContent className="grid gap-4 p-4 sm:grid-cols-2">
             {defs.map((d) => (

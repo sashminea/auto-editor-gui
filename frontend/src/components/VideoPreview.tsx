@@ -36,7 +36,7 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({ file, onFileSelect }) => {
       onDragLeave={() => setDragging(false)}
       onDrop={onDrop}
       className={cn(
-        "relative flex min-h-[240px] flex-1 flex-col overflow-hidden rounded-md border bg-black transition-colors sm:min-h-[320px] lg:min-h-0",
+        "relative flex min-h-[240px] flex-1 flex-col overflow-hidden rounded-2xl border bg-black transition-colors sm:min-h-[320px] lg:min-h-0",
         dragging && "border-primary ring-1 ring-primary"
       )}
     >
@@ -66,11 +66,11 @@ const VideoPreview: React.FC<VideoPreviewProps> = ({ file, onFileSelect }) => {
         <button
           type="button"
           onClick={browse}
-          className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center text-white/70 hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          className="hero-gradient flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center text-white/80 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <UploadIcon className="h-8 w-8" />
-          <span className="text-sm font-medium">Drop a video here, or click to select one</span>
-          <span className="text-xs text-white/50">Your clip shows up here so you can check it before exporting</span>
+          <span className="text-lg font-medium tracking-tight">Drop a video here, or click to select one</span>
+          <span className="text-xs text-white/70">Your clip shows up here so you can check it before exporting</span>
         </button>
       )}
       {dragging && (

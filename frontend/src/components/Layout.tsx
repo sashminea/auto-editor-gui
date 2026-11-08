@@ -251,7 +251,7 @@ const Layout: React.FC = () => {
 
           {frame('cuts',
             <OptionsPage title={meta('cuts').title} blurb={meta('cuts').blurb} defs={CUTS} values={extras} onChange={setOpt} onReset={reset}>
-              <Card className="rounded-md shadow-none">
+              <Card >
                 <CardContent className="flex items-center justify-between gap-3 p-4">
                   <p className="text-sm text-muted-foreground">Want to see what gets removed? Keep only the cut parts instead.</p>
                   <Button variant="outline" size="sm" className="shrink-0" onClick={() => patch({ '--video-speed': '99999', '--silent-speed': '1' })}>

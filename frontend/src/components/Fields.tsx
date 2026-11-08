@@ -22,7 +22,7 @@ export const OptionField: React.FC<OptionFieldProps> = ({ def, value, onChange }
 
   if (def.type === "bool") {
     return (
-      <label htmlFor={id} className="flex cursor-pointer items-start gap-3 rounded-md border p-3 hover:bg-accent/40">
+      <label htmlFor={id} className="flex cursor-pointer items-start gap-3 rounded-xl border p-3 transition-colors hover:bg-accent/60">
         <input
           id={id}
           type="checkbox"

@@ -43,15 +43,17 @@ const TitleBar: React.FC<TitleBarProps> = ({ theme, onToggleTheme }) => {
 
   return (
     <header
-      className="flex h-10 shrink-0 select-none items-center justify-between border-b bg-card [-webkit-app-region:drag]"
+      className="flex h-10 shrink-0 select-none items-center justify-between border-b bg-background [-webkit-app-region:drag]"
       // Leave room for native window controls (right on Windows/Linux, left on macOS)
       style={{ paddingLeft: isMac ? 84 : 12, paddingRight: isMac ? 12 : 150 }}
     >
       <div className="flex items-center gap-2">
-        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" className="text-primary">
+        <span className="grid h-6 w-6 place-items-center rounded-lg bg-foreground text-background">
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24">
           <path fill="currentColor" d="m22 2l-2.5 1.4L17 2l1.4 2.5L17 7l2.5-1.4L22 7l-1.4-2.5zm-7.63 5.29a.996.996 0 0 0-1.41 0L1.29 18.96a.996.996 0 0 0 0 1.41l2.34 2.34c.39.39 1.02.39 1.41 0L16.7 11.05a.996.996 0 0 0 0-1.41zm-1.03 5.49l-2.12-2.12l2.44-2.44l2.12 2.12z" />
         </svg>
-        <span className="text-sm font-semibold">Auto-Editor GUI</span>
+        </span>
+        <span className="text-sm font-medium tracking-tight">Auto-Editor GUI</span>
       </div>
 
       <div className="flex items-center gap-1 [-webkit-app-region:no-drag]">
@@ -60,7 +62,7 @@ const TitleBar: React.FC<TitleBarProps> = ({ theme, onToggleTheme }) => {
             <QuestionMarkCircledIcon /> Help
           </Button>
           {helpOpen && (
-            <div role="menu" className="absolute right-0 top-full z-50 mt-1 w-64 rounded-md border bg-popover p-1 text-popover-foreground shadow-lg">
+            <div role="menu" className="absolute right-0 top-full z-50 mt-2 w-64 rounded-2xl border bg-popover/95 p-1.5 text-popover-foreground shadow-xl backdrop-blur-xl">
               {helpLinks.map(({ title, href, icon: Icon, hint }) => (
                 <a
                   key={title}
@@ -69,7 +71,7 @@ const TitleBar: React.FC<TitleBarProps> = ({ theme, onToggleTheme }) => {
                   target={href.startsWith("http") ? "_blank" : undefined}
                   rel="noreferrer"
                   onClick={() => setHelpOpen(false)}
-                  className="flex items-start gap-3 rounded-sm p-2 text-sm hover:bg-accent focus:bg-accent focus:outline-none"
+                  className="flex items-start gap-3 rounded-xl p-2.5 text-sm hover:bg-accent focus:bg-accent focus:outline-none"
                 >
                   <Icon className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
                   <span>

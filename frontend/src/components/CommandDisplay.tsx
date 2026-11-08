@@ -14,9 +14,9 @@ const colourise = (command: string) =>
     .filter((t) => t !== '')
     .map((t, i) => {
       if (/^\s+$/.test(t)) return <span key={i}>{t}</span>;
-      if (t.startsWith('--')) return <span key={i} className="text-primary">{t}</span>;
-      if (t.startsWith('"')) return <span key={i} className="text-emerald-600 dark:text-emerald-400">{t}</span>;
-      if (i === 0) return <span key={i} className="font-semibold">{t}</span>;
+      if (t.startsWith('--')) return <span key={i} className="text-[#f3b77b]">{t}</span>;
+      if (t.startsWith('"')) return <span key={i} className="text-[#9bd98c]">{t}</span>;
+      if (i === 0) return <span key={i} className="font-medium text-[#c4a3ff]">{t}</span>;
       return <span key={i}>{t}</span>;
     });
 
@@ -35,9 +35,9 @@ const CommandDisplay: React.FC<CommandDisplayProps> = ({ command }) => {
   };
 
   return (
-    <Card className="shrink-0 rounded-md shadow-none">
+    <Card className="shrink-0">
       <CardHeader className="flex-row items-center justify-between space-y-0 px-4 py-2">
-        <CardTitle className="text-sm">Generated command</CardTitle>
+        <CardTitle className="mono-label text-muted-foreground">Generated command</CardTitle>
         <div className="flex items-center gap-1">
           <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={copy} disabled={!command}>
             {copied ? <CheckIcon /> : <CopyIcon />} {copied ? "Copied" : "Copy"}
@@ -49,8 +49,8 @@ const CommandDisplay: React.FC<CommandDisplayProps> = ({ command }) => {
       </CardHeader>
       {!hidden && (
         <CardContent className="px-4 pb-4 pt-0">
-          <pre className="max-h-28 overflow-auto whitespace-pre-wrap break-all rounded-md border bg-background p-3 font-mono text-xs leading-relaxed">
-            {command ? colourise(command) : <span className="text-muted-foreground">Select a file and press Apply to see the command.</span>}
+          <pre className="max-h-28 overflow-auto whitespace-pre-wrap break-all rounded-xl bg-[#15101f] p-4 font-mono text-xs leading-relaxed text-white/90">
+            {command ? colourise(command) : <span className="text-white/50">Select a file and press Apply to see the command.</span>}
           </pre>
         </CardContent>
       )}
