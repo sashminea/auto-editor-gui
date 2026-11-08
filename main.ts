@@ -14,6 +14,7 @@ import { spawn, spawnSync, type ChildProcess } from "child_process";
 import fs from "fs";
 import os from "os";
 import { pathToFileURL } from "url";
+import { registerWaveformIpc } from "./waveform";
 
 // ───────────────────────────── Paths & constants ─────────────────────────────
 const isDev = !app.isPackaged;
@@ -479,6 +480,9 @@ ipcMain.handle("check-runtime", () => {
     : { ok: false, detail: r.error ?? "Unknown error" };
 });
 
+// Waveform preview (needs the bundled Python; falls back gracefully otherwise)
+registerWaveformIpc(resolveRunner, log);
+
 // Kept so older renderer code that still asks for it keeps working
 ipcMain.handle("get-appdata-path", () => app.getPath("appData"));
 
@@ -527,10 +531,10 @@ function createWindow() {
     minHeight: 600,
     show: false, // shown on ready-to-show, so there is no white flash
     title: "Auto-Editor GUI",
-    backgroundColor: "#15101f",
+    backgroundColor: "#fbfaf6",
     autoHideMenuBar: true,
     titleBarStyle: "hidden",
-    titleBarOverlay: { color: "#15101f", symbolColor: "#fbfaf6", height: 40 },
+    titleBarOverlay: { color: "#fbfaf6", symbolColor: "#272038", height: 40 },
     webPreferences: {
       preload: PRELOAD,
       contextIsolation: true,

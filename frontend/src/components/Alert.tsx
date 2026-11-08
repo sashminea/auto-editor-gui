@@ -33,7 +33,7 @@ const AlertComponent: React.FC<AlertProps> = ({ type, message, onDismiss, action
   }[type];
 
   return (
-    <div className="fixed bottom-4 right-4 z-50 w-[min(26rem,calc(100vw-2rem))]" role={type === 'error' ? 'alert' : 'status'}>
+    <div className="fixed right-4 top-14 z-50 w-[min(26rem,calc(100vw-2rem))]" role={type === 'error' ? 'alert' : 'status'}>
       <Alert
         variant={config.variant}
         className={cn("flex items-start gap-3 rounded-2xl bg-card/95 shadow-xl backdrop-blur-xl", type === 'success' && "border-emerald-500/50")}

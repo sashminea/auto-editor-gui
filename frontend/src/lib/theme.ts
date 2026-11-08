@@ -5,9 +5,9 @@ export type Theme = "dark" | "light";
 export function useTheme() {
   const [theme, setTheme] = useState<Theme>(() => {
     try {
-      return (localStorage.getItem("theme") as Theme) || "dark"; // dark by default
+      return localStorage.getItem("theme") === "dark" ? "dark" : "light"; // light by default
     } catch {
-      return "dark";
+      return "light";
     }
   });
 
@@ -16,13 +16,10 @@ export function useTheme() {
     try {
       localStorage.setItem("theme", theme);
     } catch {}
-    // Optional: lets the main process recolour the native window controls
+    // lets the main process recolour the native window controls
     (window as any).electron?.setTitleBarTheme?.(theme);
   }, [theme]);
 
-  const toggle = useCallback(
-    () => setTheme((t) => (t === "dark" ? "light" : "dark")),
-    [],
-  );
+  const toggle = useCallback(() => setTheme((t) => (t === "dark" ? "light" : "dark")), []);
   return { theme, toggle };
 }

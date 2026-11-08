@@ -165,3 +165,10 @@
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }
 }
+
+/* waveform bars that breathe while listening (hero demo + loading state) */
+@keyframes barwave {
+  from { transform: scaleY(0.55); }
+  to   { transform: scaleY(1); }
+}
+.bar-wave { animation: barwave 1.1s ease-in-out infinite alternate; transform-origin: center; }

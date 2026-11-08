@@ -1,60 +1,44 @@
-import React, { useState } from 'react';
-import { CheckIcon, ChevronDownIcon, ChevronUpIcon, CopyIcon } from "@radix-ui/react-icons";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import React, { useState } from "react";
+import { CheckIcon, CopyIcon } from "@radix-ui/react-icons";
 
-interface CommandDisplayProps {
-  command: string;
-}
-
-// Light syntax colouring: program name, --flags, quoted paths
+// The site's dark .cmd box: program, --flags and quoted paths coloured
 const colourise = (command: string) =>
   command
     .split(/("[^"]*"|\s+)/)
-    .filter((t) => t !== '')
+    .filter((t) => t !== "")
     .map((t, i) => {
       if (/^\s+$/.test(t)) return <span key={i}>{t}</span>;
-      if (t.startsWith('--')) return <span key={i} className="text-[#f3b77b]">{t}</span>;
+      if (t.startsWith("--")) return <span key={i} className="text-[#f3b77b]">{t}</span>;
       if (t.startsWith('"')) return <span key={i} className="text-[#9bd98c]">{t}</span>;
-      if (i === 0) return <span key={i} className="font-medium text-[#c4a3ff]">{t}</span>;
+      if (i === 0) return <span key={i} className="text-[#c4a3ff]">{t}</span>;
       return <span key={i}>{t}</span>;
     });
 
-const CommandDisplay: React.FC<CommandDisplayProps> = ({ command }) => {
+const CommandDisplay: React.FC<{ command: string }> = ({ command }) => {
   const [copied, setCopied] = useState(false);
-  const [hidden, setHidden] = useState(false);
-
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(command);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch (error) {
-      console.error('Copy failed:', error);
+      console.error("Copy failed:", error);
     }
   };
-
   return (
-    <Card className="shrink-0">
-      <CardHeader className="flex-row items-center justify-between space-y-0 px-4 py-2">
-        <CardTitle className="mono-label text-muted-foreground">Generated command</CardTitle>
-        <div className="flex items-center gap-1">
-          <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={copy} disabled={!command}>
-            {copied ? <CheckIcon /> : <CopyIcon />} {copied ? "Copied" : "Copy"}
-          </Button>
-          <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => setHidden((h) => !h)} aria-expanded={!hidden}>
-            {hidden ? <ChevronDownIcon /> : <ChevronUpIcon />} {hidden ? "Show" : "Hide"}
-          </Button>
-        </div>
-      </CardHeader>
-      {!hidden && (
-        <CardContent className="px-4 pb-4 pt-0">
-          <pre className="max-h-28 overflow-auto whitespace-pre-wrap break-all rounded-xl bg-[#15101f] p-4 font-mono text-xs leading-relaxed text-white/90">
-            {command ? colourise(command) : <span className="text-white/50">Select a file and press Apply to see the command.</span>}
-          </pre>
-        </CardContent>
-      )}
-    </Card>
+    <div className="flex min-w-0 items-center gap-2 rounded-xl bg-[#15101f] py-1 pl-4 pr-1.5">
+      <pre className="min-w-0 flex-1 overflow-x-auto whitespace-pre py-2 font-mono text-xs leading-none text-white/90 [scrollbar-width:none]" title={command}>
+        {command ? colourise(command) : <span className="text-white/50">Your command appears here.</span>}
+      </pre>
+      <button
+        type="button"
+        onClick={copy}
+        disabled={!command}
+        className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full px-3 text-xs text-white/80 transition-colors hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60 disabled:opacity-40"
+      >
+        {copied ? <CheckIcon /> : <CopyIcon />} {copied ? "Copied" : "Copy"}
+      </button>
+    </div>
   );
 };
 

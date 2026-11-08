@@ -4,7 +4,7 @@ import { cva, type VariantProps } from "class-variance-authority"
 
 import { cn } from "@/lib/utils"
 
-// Pill buttons, same as the site's .btn (ink default, lavender "accent", ghost outline)
+// Pill buttons, same as the site's .btn (ink default, lavender "accent", white, ghost outline)
 const buttonVariants = cva(
   "group/btn relative inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-full text-[13px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0",
   {
@@ -12,6 +12,7 @@ const buttonVariants = cva(
       variant: {
         default: "bg-foreground text-background hover:bg-foreground/90",
         accent: "bg-[hsl(var(--lavender))] text-[#272038] hover:brightness-95",
+        white: "bg-white text-[#272038] hover:bg-white/90",
         destructive: "bg-destructive text-destructive-foreground hover:bg-destructive/90",
         outline: "border border-input bg-background/60 backdrop-blur hover:bg-accent hover:text-accent-foreground",
         secondary: "bg-secondary text-secondary-foreground hover:bg-secondary/70",

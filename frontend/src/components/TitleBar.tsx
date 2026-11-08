@@ -1,13 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  MoonIcon,
-  SunIcon,
-  QuestionMarkCircledIcon,
-  GitHubLogoIcon,
-  LinkedInLogoIcon,
-  PlayIcon,
+  MoonIcon, SunIcon, HomeIcon, QuestionMarkCircledIcon, GitHubLogoIcon, LinkedInLogoIcon, PlayIcon, MixerHorizontalIcon,
 } from "@radix-ui/react-icons";
 import { Button } from "@/components/ui/button";
+import logo from "@/assets/icon.ico"; // repo-root built-assets/icon.ico
 import type { Theme } from "@/lib/theme";
 
 const isMac = typeof navigator !== "undefined" && /Mac/i.test(navigator.platform);
@@ -15,6 +11,9 @@ const isMac = typeof navigator !== "undefined" && /Mac/i.test(navigator.platform
 interface TitleBarProps {
   theme: Theme;
   onToggleTheme: () => void;
+  onOpenOptions: () => void;
+  optionsCount: number;
+  onHome?: () => void; // only passed while a video is open
 }
 
 const helpLinks = [
@@ -23,7 +22,7 @@ const helpLinks = [
   { title: "Contact us", href: "https://www.linkedin.com/in/sashminadhikari/", icon: LinkedInLogoIcon, hint: "Questions or need help?" },
 ];
 
-const TitleBar: React.FC<TitleBarProps> = ({ theme, onToggleTheme }) => {
+const TitleBar: React.FC<TitleBarProps> = ({ theme, onToggleTheme, onOpenOptions, optionsCount, onHome }) => {
   const [helpOpen, setHelpOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -48,15 +47,29 @@ const TitleBar: React.FC<TitleBarProps> = ({ theme, onToggleTheme }) => {
       style={{ paddingLeft: isMac ? 84 : 12, paddingRight: isMac ? 12 : 150 }}
     >
       <div className="flex items-center gap-2">
-        <span className="grid h-6 w-6 place-items-center rounded-lg bg-foreground text-background">
-        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24">
-          <path fill="currentColor" d="m22 2l-2.5 1.4L17 2l1.4 2.5L17 7l2.5-1.4L22 7l-1.4-2.5zm-7.63 5.29a.996.996 0 0 0-1.41 0L1.29 18.96a.996.996 0 0 0 0 1.41l2.34 2.34c.39.39 1.02.39 1.41 0L16.7 11.05a.996.996 0 0 0 0-1.41zm-1.03 5.49l-2.12-2.12l2.44-2.44l2.12 2.12z" />
-        </svg>
-        </span>
+        <img src={logo} alt="" draggable={false} className="h-6 w-6 object-contain" />
         <span className="text-sm font-medium tracking-tight">Auto-Editor GUI</span>
+        {onHome && (
+          <button
+            type="button"
+            onClick={onHome}
+            aria-label="Back to start"
+            title="Back to start"
+            className="ml-1 grid h-6 w-6 place-items-center rounded-full text-muted-foreground/40 transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [-webkit-app-region:no-drag]"
+          >
+            <HomeIcon className="h-3.5 w-3.5" />
+          </button>
+        )}
       </div>
 
       <div className="flex items-center gap-1 [-webkit-app-region:no-drag]">
+        <Button variant="outline" size="sm" onClick={onOpenOptions} title="More options (Ctrl+,)">
+          <MixerHorizontalIcon /> Options
+          {optionsCount > 0 && (
+            <span className="mono-label rounded-full bg-primary px-1.5 py-0.5 text-[10px] text-primary-foreground">{optionsCount}</span>
+          )}
+        </Button>
+
         <div className="relative" ref={menuRef}>
           <Button variant="ghost" size="sm" onClick={() => setHelpOpen((o) => !o)} aria-expanded={helpOpen} aria-haspopup="menu">
             <QuestionMarkCircledIcon /> Help
@@ -85,10 +98,7 @@ const TitleBar: React.FC<TitleBarProps> = ({ theme, onToggleTheme }) => {
         </div>
 
         <Button
-          variant="ghost"
-          size="icon"
-          className="h-8 w-8"
-          onClick={onToggleTheme}
+          variant="ghost" size="icon" className="h-8 w-8" onClick={onToggleTheme}
           aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
           title={theme === "dark" ? "Light theme" : "Dark theme"}
         >
